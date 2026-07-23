@@ -6,6 +6,23 @@ IMAGE="${IMAGE:-e-bts:openeb-3.1.2}"
 
 mkdir -p "$ROOT_DIR/recordings"
 
+# record_sequence.cpp reads/writes control/ and recordings/ as paths relative
+# to its working directory. For every other command, -w /data/recordings lets
+# relative output paths land directly in recordings/. But record_sequence
+# needs *both* directories, so it has to run from /data instead -- otherwise
+# control/ and recordings/ would resolve inside recordings/ (recordings/control
+# and recordings/recordings), where the host-side Python script driving it
+# would never find them.
+case "${1:-}" in
+  record|record_sequence|E_BTS_record_sequence)
+    mkdir -p "$ROOT_DIR/control"
+    WORKDIR="/data"
+    ;;
+  *)
+    WORKDIR="/data/recordings"
+    ;;
+esac
+
 DOCKER_ARGS=(
   --rm
   -it
@@ -16,7 +33,7 @@ DOCKER_ARGS=(
   -e "QT_X11_NO_MITSHM=1"
   -v "$ROOT_DIR:/data:rw"
   -v "/dev/bus/usb:/dev/bus/usb"
-  -w "/data/recordings"
+  -w "$WORKDIR"
 )
 
 if [ -n "${DISPLAY:-}" ]; then

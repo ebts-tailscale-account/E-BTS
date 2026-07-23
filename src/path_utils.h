@@ -35,6 +35,16 @@ inline std::filesystem::path default_csv_path(const std::filesystem::path &raw_p
     return csv_path;
 }
 
+inline std::filesystem::path default_video_path(const std::filesystem::path &raw_path, bool monochrome = false) {
+    std::filesystem::path video_path = raw_path;
+    video_path.replace_extension();
+    if (monochrome) {
+        video_path += "_BW";
+    }
+    video_path += ".mp4";
+    return video_path;
+}
+
 inline unsigned long long timestamp_us(Metavision::timestamp timestamp) {
     return static_cast<unsigned long long>(timestamp);
 }

@@ -108,6 +108,16 @@ Rectangle {
         }
 
         Button {
+            id: exportButton
+            text: "Export"
+            onClicked: exportDialog.open()
+
+            ExportDialog {
+                id: exportDialog
+            }
+        }
+
+        Button {
             visible: !root.connected
             text: "Check Connection"
             highlighted: true

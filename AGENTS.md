@@ -60,7 +60,7 @@ The precise information-gathering checklist is maintained in `requirements.txt` 
 - Do not add speculative abstractions or dual-sensor functionality “for later.” Introduce structure only when a requested change needs it.
 - Keep changes narrowly scoped to the prompt. If a change depends on an undecided sensor behavior, timing model, data-flow design, or hardware assumption, explain the uncertainty and ask before choosing an architecture.
 - Prefer small, verifiable steps. Preserve working EVK1 capture and analysis behavior while the project advances toward simultaneous slow/fast adaptive sensing.
-
+- When attempting UI testing, do not over complicate it, just ask user to check the UI behaviour and report back to you.
 Documentation-only changes are acceptable only when requested. Never treat this file as permission to make unrelated cleanup changes.
 
 ## Code quality requirements

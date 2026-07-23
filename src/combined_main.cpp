@@ -14,6 +14,8 @@
 #include <QUrl>
 
 #include "gui/camera_session_worker.h"
+#include "gui/export_bridge.h"
+#include "gui/export_worker.h"
 #include "gui/frame_view.h"
 #include "gui/gui_bridge.h"
 
@@ -38,9 +40,24 @@ int main(int argc, char *argv[]) {
     // the QQmlEngine -- see gui/gui_bridge.h.
     auto *bridge = new e_bts::gui::GuiBridge(worker);
 
+    // Independent of the camera worker/thread above: Camera::from_file()
+    // (used by raw_to_csv/raw_to_video conversions) opens its own handle, so
+    // exporting a recording never contends with a live EVK1 session. Still
+    // needs its own thread so a large file's conversion loop doesn't stall
+    // the GUI while it runs.
+    auto *exportWorker  = new e_bts::gui::ExportWorker();
+    auto *exportThread   = new QThread();
+    exportWorker->moveToThread(exportThread);
+    QObject::connect(exportThread, &QThread::finished, exportWorker, &QObject::deleteLater);
+    exportThread->start();
+
+    auto *exportBridge = new e_bts::gui::ExportBridge(exportWorker);
+
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("cameraWorker", worker);
     engine.rootContext()->setContextProperty("cameraEvents", bridge);
+    engine.rootContext()->setContextProperty("exportWorker", exportWorker);
+    engine.rootContext()->setContextProperty("exportEvents", exportBridge);
     engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
         return -1;
@@ -56,6 +73,10 @@ int main(int argc, char *argv[]) {
     workerThread->quit();
     workerThread->wait();
     delete workerThread;
+
+    exportThread->quit();
+    exportThread->wait();
+    delete exportThread;
 
     return exit_code;
 }

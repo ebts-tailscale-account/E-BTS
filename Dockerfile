@@ -27,12 +27,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libusb-1.0-0-dev \
     mesa-utils \
     pkg-config \
+    qml-module-qt-labs-platform \
     qml-module-qtgraphicaleffects \
     qml-module-qtquick-controls2 \
     qml-module-qtquick-layouts \
     qml-module-qtquick2 \
     qtbase5-dev \
     qtdeclarative5-dev \
+    qtquickcontrols2-5-dev \
     software-properties-common \
     unzip \
     wget \

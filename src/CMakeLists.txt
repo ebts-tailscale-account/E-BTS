@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(MetavisionSDK COMPONENTS core driver ui REQUIRED)
-find_package(OpenCV COMPONENTS core imgcodecs imgproc REQUIRED)
+find_package(OpenCV COMPONENTS core imgcodecs imgproc videoio REQUIRED)
 find_package(Qt5 COMPONENTS Quick QuickControls2 Gui REQUIRED)
 
 # Headers pulled in by circle_tracking.cpp/circle_tracker_cli_main.cpp; not
@@ -60,9 +60,13 @@ add_executable(E_BTS_GUI
     sequence_recording_controller.h
     gui/camera_session_worker.cpp
     gui/camera_session_worker.h
+    gui/export_bridge.h
+    gui/export_worker.cpp
+    gui/export_worker.h
     gui/frame_view.cpp
     gui/frame_view.h
     gui/gui_bridge.h
+    gui/log_stream.h
     qml.qrc
 )
 target_link_libraries(E_BTS_GUI PRIVATE
