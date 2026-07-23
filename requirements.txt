@@ -1,0 +1,205 @@
+E-BTS NORMAL-FORCE EXPERIMENT: INFORMATION STILL REQUIRED
+========================================================
+
+This is an experimental-information checklist, not a software dependency file.
+Values already confirmed in AGENTS.md are not requested again here. Fill in a
+value, attach the requested artifact, or write "unknown". Use SI units wherever
+possible. Do not estimate a value when it can be measured or read from a model
+label, CAD file, controller configuration, or datasheet.
+
+PRIORITY A - REQUIRED BEFORE DEFINING THE FIRST CALIBRATION EXPERIMENT
+---------------------------------------------------------------------
+
+R01. CONICAL INDENTER GEOMETRY
+
+Provide:
+  - Cone tip radius in millimetres. A real cone has a rounded tip; measure the
+    radius from CAD, a microscope image with scale, or the manufacturing drawing.
+  - Full included cone angle in degrees (angle from one side of the cone to the
+    opposite side). Do not report only "sharp" or "pointed".
+  - Cone material or plastic type, if known.
+  - Whether the cone or its mounting visibly flexes under the intended load:
+    yes, no, or unknown.
+  - One side-view photograph with a ruler or other scale in the same plane.
+
+Why: tip radius and cone angle determine contact area and how normal force is
+distributed through the silicone. The plastic name is less important if the
+indenter is demonstrably much stiffer than the silicone.
+
+R02. MARKER GRID GEOMETRY
+
+Provide:
+  - Dome height in millimetres.
+  - Horizontal centre-to-centre pitch in millimetres.
+  - Vertical centre-to-centre pitch in millimetres.
+  - Exact number of marker rows and columns.
+  - Whether alternate rows are offset: yes or no. If yes, give the offset in
+    millimetres or as a fraction of horizontal pitch.
+  - Whether the marker domes, black layer, and yellow layer are all SORTA-Clear
+    18 with different pigments. List a different material wherever applicable.
+  - Preferably, a dimensioned mold drawing or a straight-on photograph beside
+    a millimetre ruler.
+
+Why: the grid supplies physical scale, marker identities, and displacement
+samples. Dome height and material determine whether dome deformation biases the
+motion of the underlying sheet.
+
+R03. SENSOR MOUNTING GEOMETRY
+
+Provide a dimensioned sketch or CAD screenshot showing:
+  - Width and height of the unsupported silicone area inside the clamp, in mm.
+  - Width of silicone captured by the fixture on each of the four sides, in mm.
+  - Number and positions of bolts relative to the 36 mm by 30 mm sheet.
+  - Whether bolts compress a continuous frame or only isolated tabs/points.
+  - Any known bolt torque, clamping gap, or initial compression. Write "not
+    controlled" if these are not controlled during assembly.
+  - Whether silicone can slip at an edge during normal operation: yes, no, or
+    unknown.
+  - Confirmation of this direction: camera -> domes -> 2 mm black layer ->
+    2 mm yellow layer -> conical indenter. If false, supply the correct order.
+  - Every additional layer in that path, including a window, plate, membrane,
+    adhesive, air gap, or coating, with thickness where known.
+
+Why: a sheet fixed continuously on four sides deforms differently from one held
+at bolt points or allowed to slip. The active dimensions may also be smaller
+than the nominal 36 mm by 30 mm sheet.
+
+R04. ALLOWED TEST LOAD
+
+This item explains the earlier "maximum calibration load" question. It does not
+ask for sensor resolution and it does not ask you to calculate material failure.
+
+Provide:
+  - The maximum normal force that the laboratory is willing to command during
+    initial tests, in newtons.
+  - Who or what establishes that limit: manipulator software limit, fixture
+    rating, WITTENSTEIN range, prior experiment, or responsible researcher.
+  - Automatic stop conditions available from the robot, such as force limit,
+    displacement limit, emergency stop, or fixture-slip detection.
+
+The observed approximately 98 N break/slip load is a failure observation, not a
+safe limit. If no safe limit has been selected, write "not yet selected" and
+select one with the person responsible for the physical test before loading.
+
+Why: the data-collection sequence needs bounded force setpoints and must not use
+the damage observation as an operating specification.
+
+R05. CONTACT-LOCATION GROUND TRUTH
+
+Provide:
+  - Which robot coordinate frame reports the cone-tip position.
+  - Position units and expected positioning accuracy.
+  - A definition of sensor coordinates: choose an origin on the 36 mm by 30 mm
+    surface and positive X/Y directions. A labeled photograph is sufficient.
+  - How robot coordinates can be registered to sensor coordinates: calibration
+    points, fixture CAD, measured offsets, or another method.
+  - Whether the first experiment will keep the cone axis perpendicular to the
+    sensor. If not, provide commanded approach angles in degrees.
+
+Why: force location cannot be evaluated unless robot positions and estimated
+positions refer to the same physical coordinate system.
+
+R06. WITTENSTEIN REFERENCE SENSOR
+
+Provide from the device label or datasheet:
+  - Exact manufacturer model/part number.
+  - Force axes measured.
+  - Rated force range for the normal axis, in N.
+  - Stated accuracy or measurement uncertainty.
+  - Sampling rate, in samples per second.
+  - Output interface and data format.
+  - A sketch or photograph showing whether the WITTENSTEIN sensor measures force
+    in series between robot and cone or elsewhere in the load path.
+
+Why: these values determine valid calibration loads, reference uncertainty, and
+the time resolution available for alignment with EVK events.
+
+R07. CLOCKS AND SYNCHRONIZATION
+
+For each of EVK1, WITTENSTEIN acquisition, robot feedback, and LED controller,
+provide:
+  - Timestamp source or clock owner.
+  - Timestamp unit and nominal sampling/update rate.
+  - Available hardware trigger input/output, if any.
+  - Whether the acquisition computer receives all streams.
+
+Also provide a connection diagram, even a hand-drawn one, showing cables and
+trigger lines. If there is no shared trigger, state whether one visible load or
+LED transition can be recorded by all relevant streams for software alignment.
+
+Why: force labels must correspond to the event timestamps that describe the
+same deformation, especially during loading and unloading.
+
+R08. LED TIMING
+
+Provide controller settings or measured values for each LED pair:
+  - Flicker frequency in Hz.
+  - Duty cycle in percent.
+  - Phase offset between pairs in degrees or microseconds.
+  - LED current, controller brightness setting, or drive voltage.
+  - Which image rows/physical region each pair primarily illuminates.
+  - Controller model and how timing is generated.
+  - Whether a transition signal can be timestamped by the EVK1 or acquisition
+    computer: yes, no, or unknown.
+
+Why: the algorithm will read raw events. Known lighting cycles allow it to group
+events caused by illumination and distinguish them from events caused by marker
+motion. This does not imply removing the intentional central black band.
+
+R09. OPTICAL CALIBRATION INPUTS
+
+Provide:
+  - Macro lens manufacturer/model and any focal-length or magnification marking.
+  - Distance from the lens reference surface to the marker-dome plane, in mm;
+    identify the surfaces used for the measurement.
+  - Confirmation that camera and sensor mounts remain fixed between calibration
+    and force tests.
+  - At least one calibration recording or image of a target with known spacing
+    placed at the marker plane. A checkerboard or dot grid with millimetre
+    dimensions is suitable.
+
+Why: nominal straight-on alignment does not remove lens distortion or establish
+the physical millimetres represented by each pixel.
+
+PRIORITY B - REQUIRED WHEN COLLECTING THE FIRST REFERENCE DATASET
+----------------------------------------------------------------
+
+R10. ONE SYNCHRONIZED EXAMPLE TRIAL
+
+Provide one trial containing:
+  - EVK RAW events, including original timestamps and polarities.
+  - WITTENSTEIN samples and robot pose/force feedback with timestamps.
+  - LED timing log or the controller settings used.
+  - At least 5 seconds unloaded before contact.
+  - The loading interval, a static hold of at least 5 seconds, unloading, and at
+    least 5 seconds unloaded afterward.
+  - Commanded force, cone-tip location, and approach direction.
+  - EVK bias/configuration values and all software/controller settings that can
+    change event generation.
+
+Do not convert the EVK recording to the white visualization for analysis. The
+RAW event stream is the required input.
+
+Why: this trial is needed to verify event timing, marker observability, static
+hold behavior, and reference-data alignment before designing a larger protocol.
+
+PRIORITY C - REQUIRED FOR A PHYSICS MODEL, OPTIONAL FOR THE FIRST EMPIRICAL DEMO
+-------------------------------------------------------------------------------
+
+R11. SILICONE CHARACTERIZATION DECISION
+
+Choose and record one of these paths:
+  A. Make same-batch material specimens and measure mechanical response; or
+  B. Identify an effective sensor model from WITTENSTEIN calibration data.
+
+For path A, retain specimen dimensions and collect force-displacement data for
+compression or indentation at the operating temperature, including loading,
+5-to-60-second holds, and unloading. Record at least three repeated cycles.
+
+For path B, plan repeated known-force trials across multiple surface locations,
+including loading, 5-to-60-second holds, and unloading. Preserve raw measurements
+so hysteresis and relaxation can be fitted rather than assumed absent.
+
+Why: manufacturer Shore hardness and ultimate tensile data do not uniquely give
+the small-strain, time-dependent constitutive behavior of this cured multilayer
+sensor.

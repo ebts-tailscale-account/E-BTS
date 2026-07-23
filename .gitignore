@@ -1,0 +1,44 @@
+# CMake build output
+/build/
+/cmake-build-*/
+/out/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+/compile_commands.json
+
+# Compiled binaries and objects
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+/E_BTS
+
+# CLion / JetBrains local project state
+/.idea/
+
+# Local Codex/agent workspace metadata
+/.codex/
+/.agents/
+
+# Event-camera recordings and generated media
+*.raw
+*.dat
+*.hdf5
+*.avi
+*.mp4
+*.csv
+*.bias
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
+.DS_Store
