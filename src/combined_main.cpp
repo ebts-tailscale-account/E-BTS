@@ -17,7 +17,10 @@
 #include "gui/export_bridge.h"
 #include "gui/export_worker.h"
 #include "gui/frame_view.h"
+#include "gui/ft_graph_view.h"
 #include "gui/gui_bridge.h"
+#include "gui/wittenstein_bridge.h"
+#include "gui/wittenstein_worker.h"
 
 int main(int argc, char *argv[]) {
     QQuickStyle::setStyle("Material");
@@ -28,6 +31,7 @@ int main(int argc, char *argv[]) {
     app.setWindowIcon(QIcon(QStringLiteral(":/icon.png")));
 
     qmlRegisterType<e_bts::gui::FrameView>("EBts", 1, 0, "FrameView");
+    qmlRegisterType<e_bts::gui::FtGraphView>("EBts", 1, 0, "FtGraphView");
 
     auto *worker      = new e_bts::gui::CameraSessionWorker();
     auto *workerThread = new QThread();
@@ -53,11 +57,30 @@ int main(int argc, char *argv[]) {
 
     auto *exportBridge = new e_bts::gui::ExportBridge(exportWorker);
 
+    // Wittenstein force/torque sensor: its own device on its own serial port,
+    // so (like the export worker) it's an independent worker on its own thread,
+    // not part of the shared camera session. The camera recorder's start/stop
+    // is connected to it so the F/T CSV records in lockstep with the .raw.
+    auto *ftWorker  = new e_bts::gui::WittensteinWorker();
+    auto *ftThread  = new QThread();
+    ftWorker->moveToThread(ftThread);
+    QObject::connect(ftThread, &QThread::finished, ftWorker, &QObject::deleteLater);
+    ftThread->start();
+
+    auto *ftBridge = new e_bts::gui::WittensteinBridge(ftWorker);
+
+    QObject::connect(worker, &e_bts::gui::CameraSessionWorker::recordingStartedPath, ftWorker,
+                     &e_bts::gui::WittensteinWorker::startRecording);
+    QObject::connect(worker, &e_bts::gui::CameraSessionWorker::recordingStopped, ftWorker,
+                     &e_bts::gui::WittensteinWorker::stopRecording);
+
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("cameraWorker", worker);
     engine.rootContext()->setContextProperty("cameraEvents", bridge);
     engine.rootContext()->setContextProperty("exportWorker", exportWorker);
     engine.rootContext()->setContextProperty("exportEvents", exportBridge);
+    engine.rootContext()->setContextProperty("ftWorker", ftWorker);
+    engine.rootContext()->setContextProperty("ftEvents", ftBridge);
     engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
         return -1;
@@ -77,6 +100,10 @@ int main(int argc, char *argv[]) {
     exportThread->quit();
     exportThread->wait();
     delete exportThread;
+
+    ftThread->quit();
+    ftThread->wait();
+    delete ftThread;
 
     return exit_code;
 }

@@ -13,6 +13,7 @@ Rectangle {
     property bool cameraOpen: false
     property bool circleTrackingOpen: false
     property bool sequenceRecordingOpen: false
+    property bool forceTorqueOpen: false
     property bool recording: false
 
     signal toggleSource(string name)
@@ -69,6 +70,7 @@ Rectangle {
                 cameraOpen: root.cameraOpen
                 circleTrackingOpen: root.circleTrackingOpen
                 sequenceRecordingOpen: root.sequenceRecordingOpen
+                forceTorqueOpen: root.forceTorqueOpen
                 onToggleSource: root.toggleSource(name)
             }
         }

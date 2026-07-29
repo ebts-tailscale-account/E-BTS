@@ -47,6 +47,16 @@ CameraSessionWorker::CameraSessionWorker(QObject *parent) :
         emit recordingLogLine(QString::fromStdString(message));
     });
 
+    // Fan the recorder's start/stop out to the Wittenstein F/T worker so its
+    // CSV shares the camera .raw's base name and starts/stops in lockstep.
+    // Both paths (manual button, start.cmd) funnel through the controller, so
+    // hooking it here covers both. These emit on this worker's thread; the
+    // connections to WittensteinWorker (its own thread) auto-queue.
+    sequence_recording_.set_recording_started_callback([this](const std::filesystem::path &raw_path) {
+        emit recordingStartedPath(QString::fromStdString(raw_path.string()));
+    });
+    sequence_recording_.set_recording_stopped_callback([this]() { emit recordingStopped(); });
+
     poll_timer_ = new QTimer(this);
     poll_timer_->setInterval(kPollIntervalMs);
     connect(poll_timer_, &QTimer::timeout, this, &CameraSessionWorker::pollTick);

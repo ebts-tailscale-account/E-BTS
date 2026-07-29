@@ -16,6 +16,7 @@ Popup {
     property bool cameraOpen: false
     property bool circleTrackingOpen: false
     property bool sequenceRecordingOpen: false
+    property bool forceTorqueOpen: false
 
     signal toggleSource(string name)
 
@@ -38,6 +39,11 @@ Popup {
             width: root.width - 2
             text: (root.sequenceRecordingOpen ? "✓  " : "     ") + "Sequence Recording"
             onClicked: root.toggleSource("sequenceRecording")
+        }
+        ItemDelegate {
+            width: root.width - 2
+            text: (root.forceTorqueOpen ? "✓  " : "     ") + "Force / Torque"
+            onClicked: root.toggleSource("forceTorque")
         }
     }
 }

@@ -65,6 +65,12 @@ signals:
     // Emitted when a quit.cmd closes the watcher on its own, so the ribbon's
     // Sequence Recording toggle can reflect that it is no longer open.
     void sequenceRecordingWatchStopped();
+    // Fired when the shared recorder starts/stops (either the manual ribbon
+    // button or start.cmd/stop.cmd), carrying the .raw path so the Wittenstein
+    // worker can log a matching _ft.csv in lockstep. Connected cross-thread to
+    // WittensteinWorker in combined_main.cpp.
+    void recordingStartedPath(QString rawPath);
+    void recordingStopped();
 
 private slots:
     void pollTick();

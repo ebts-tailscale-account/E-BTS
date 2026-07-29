@@ -21,6 +21,7 @@ ApplicationWindow {
     property bool cameraOpen: false
     property bool circleTrackingOpen: false
     property bool sequenceRecordingOpen: false
+    property bool forceTorqueOpen: false
     property bool recording: false
 
     // Qt 5.12 (this project's target) only supports Connections' older
@@ -68,6 +69,27 @@ ApplicationWindow {
         }
     }
 
+    // Wittenstein force/torque sensor -- an independent device, so it listens
+    // on its own bridge (ftEvents) and is unaffected by camera connect/disconnect.
+    // Same Qt 5.12 "onSignalName:" syntax constraint as above applies.
+    Connections {
+        target: ftEvents
+        onSampleReady: {
+            if (window.forceTorqueOpen) {
+                forceTorquePane.addSample(fx, fy, fz, mx, my, mz, temp)
+            }
+        }
+        onConnectionChanged: {
+            if (window.forceTorqueOpen) {
+                forceTorquePane.setConnected(connected, info)
+            }
+        }
+        onRecordingStateChanged: {
+            // F/T recording is driven by the camera recorder; nothing to do here
+            // yet, but this is where a combined status indicator would hook in.
+        }
+    }
+
     function toggleSource(name) {
         if (name === "camera") {
             window.cameraOpen = !window.cameraOpen
@@ -78,6 +100,9 @@ ApplicationWindow {
         } else if (name === "sequenceRecording") {
             window.sequenceRecordingOpen = !window.sequenceRecordingOpen
             cameraWorker.setSequenceRecordingActive(window.sequenceRecordingOpen)
+        } else if (name === "forceTorque") {
+            window.forceTorqueOpen = !window.forceTorqueOpen
+            ftWorker.setActive(window.forceTorqueOpen)
         }
     }
 
@@ -93,6 +118,7 @@ ApplicationWindow {
             cameraOpen: window.cameraOpen
             circleTrackingOpen: window.circleTrackingOpen
             sequenceRecordingOpen: window.sequenceRecordingOpen
+            forceTorqueOpen: window.forceTorqueOpen
             recording: window.recording
             onToggleSource: window.toggleSource(name)
             onCheckConnection: cameraWorker.connectToCamera()
@@ -149,12 +175,22 @@ ApplicationWindow {
                     Layout.preferredHeight: videoRow.visible ? (content.height * 0.25) : -1
                     onClosed: window.toggleSource("sequenceRecording")
                 }
+
+                ForceTorquePane {
+                    id: forceTorquePane
+                    visible: window.forceTorqueOpen
+                    Layout.fillWidth: true
+                    Layout.fillHeight: !videoRow.visible
+                    Layout.preferredHeight: videoRow.visible ? (content.height * 0.4) : -1
+                    Layout.minimumHeight: 160
+                    onClosed: window.toggleSource("forceTorque")
+                }
             }
 
             Label {
                 anchors.fill: parent
                 visible: window.cameraConnected && !window.cameraOpen && !window.circleTrackingOpen &&
-                        !window.sequenceRecordingOpen
+                        !window.sequenceRecordingOpen && !window.forceTorqueOpen
                 text: "No sources open. Use \"+ Add Source\" above to begin."
                 color: theme.mutedText
                 horizontalAlignment: Text.AlignHCenter

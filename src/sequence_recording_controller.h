@@ -64,6 +64,19 @@ public:
         log_callback_ = std::move(log_callback);
     }
 
+    // Fired whenever a recording begins/ends, regardless of trigger (manual
+    // ribbon button or start.cmd/stop.cmd). The started callback receives the
+    // .raw output path so companion recorders (e.g. the Wittenstein F/T CSV)
+    // can derive a matching filename and start in lockstep. Both default to
+    // empty, so the standalone E_BTS_record_sequence CLI is unaffected.
+    void set_recording_started_callback(std::function<void(const std::filesystem::path &)> callback) {
+        recording_started_callback_ = std::move(callback);
+    }
+
+    void set_recording_stopped_callback(std::function<void()> callback) {
+        recording_stopped_callback_ = std::move(callback);
+    }
+
     // Registers this controller's CD-event counter with the shared camera.
     // Safe to call once per camera connection; independent of whatever other
     // callbacks CameraSource/CircleTrackingSource register on the same
@@ -160,6 +173,10 @@ public:
         message << "Stopped. Saved " << current_output_path_ << " (" << elapsed_s << "s, " << captured_events
                 << " CD events observed).";
         log(message.str());
+
+        if (recording_stopped_callback_) {
+            recording_stopped_callback_();
+        }
     }
 
 private:
@@ -224,6 +241,10 @@ private:
         log(reason + " Recording " + current_output_path_.string() + "...");
         camera.start_recording(current_output_path_.string());
         recording_ = true;
+
+        if (recording_started_callback_) {
+            recording_started_callback_(current_output_path_);
+        }
     }
 
     void log(const std::string &message) const {
@@ -238,6 +259,8 @@ private:
     std::filesystem::path stop_file_;
     std::filesystem::path quit_file_;
     std::function<void(const std::string &)> log_callback_;
+    std::function<void(const std::filesystem::path &)> recording_started_callback_;
+    std::function<void()> recording_stopped_callback_;
 
     bool watching_  = false;
     bool recording_ = false;

@@ -42,3 +42,17 @@
 *.swp
 *~
 .DS_Store
+
+# Generated per-batch data + raw dump (regenerable, large)
+/output/
+/recordings/
+
+# NumPy event slices
+*.npy
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Vendor F/T Explorer app + manuals (matrix kept in calibration/)
+/wittenstein/

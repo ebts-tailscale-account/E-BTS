@@ -65,8 +65,13 @@ add_executable(E_BTS_GUI
     gui/export_worker.h
     gui/frame_view.cpp
     gui/frame_view.h
+    gui/ft_graph_view.cpp
+    gui/ft_graph_view.h
     gui/gui_bridge.h
     gui/log_stream.h
+    gui/wittenstein_bridge.h
+    gui/wittenstein_worker.cpp
+    gui/wittenstein_worker.h
     qml.qrc
 )
 target_link_libraries(E_BTS_GUI PRIVATE
