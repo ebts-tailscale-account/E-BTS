@@ -25,6 +25,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers the '3d' projection)
 
 REPO = os.path.dirname(os.path.abspath(__file__))
 
@@ -173,6 +174,86 @@ def overview_figure(name, offset, data, windows, step, events=None, xlim=None):
     return fig
 
 
+def resultant_figure(name, data, windows, step, xlim=None):
+    """Wittenstein resultant force magnitude |F| vs |Fz| and lateral |Fxy|.
+
+    |F| = sqrt(Fx^2 + Fy^2 + Fz^2). If Fz dominates, |F| tracks |Fz| and the
+    lateral |Fxy| = sqrt(Fx^2 + Fy^2) stays near zero; a gap between |F| and
+    |Fz| is the lateral-load contribution.
+    """
+    ft, x = data["ft"]
+    fx = baseline_zero(x, ft["Fx_N"].astype(float), BASELINE_SECONDS)
+    fy = baseline_zero(x, ft["Fy_N"].astype(float), BASELINE_SECONDS)
+    fz = baseline_zero(x, ft["Fz_N"].astype(float), BASELINE_SECONDS)
+    mag = np.sqrt(fx ** 2 + fy ** 2 + fz ** 2)
+    lat = np.sqrt(fx ** 2 + fy ** 2)
+
+    fig, ax = plt.subplots(figsize=(11.7, 5.2))
+    d = step
+    ax.plot(x[::d], mag[::d], color="black", lw=1.8, label="|F| resultant", rasterized=True)
+    ax.plot(x[::d], np.abs(fz)[::d], color="#2ca02c", lw=1.2, label="|Fz|", rasterized=True)
+    ax.plot(x[::d], lat[::d], color="#ff7f0e", lw=1.0, ls="--", label="|Fxy| lateral", rasterized=True)
+    for x0, x1, k in windows:
+        ax.axvspan(x0, x1, color="0.85", alpha=0.35, lw=0)
+    ax.set_ylabel("Force (N)")
+    ax.set_xlabel("time (s since recording start)  --  shaded = indentation windows")
+    ax.set_title("Wittenstein resultant contact force  --  '%s'   "
+                 "(|F| = sqrt(Fx^2+Fy^2+Fz^2);  gap to |Fz| = lateral load)" % name)
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="upper right", fontsize=9)
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    fig.tight_layout()
+    return fig
+
+
+def vector3d_figure(name, batch_dir):
+    """MATLAB-style 3D quiver of the peak contact-force vector per indentation.
+
+    For each poke, the (Fx, Fy, Fz) at the moment of maximum |F| (from the
+    baseline-zeroed per-poke slice) is drawn as an arrow from the origin.
+    """
+    pdir = os.path.join(batch_dir, "pokes")
+    files = sorted(f for f in os.listdir(pdir) if f.endswith("_ft.csv"))
+    if not files:
+        return None
+    vecs = []
+    for pf in files:
+        d = np.atleast_1d(np.genfromtxt(os.path.join(pdir, pf), delimiter=",", names=True))
+        fx, fy, fz = d["Fx_N"], d["Fy_N"], d["Fz_N"]
+        i = int(np.argmax(np.sqrt(fx ** 2 + fy ** 2 + fz ** 2)))
+        vecs.append((float(fx[i]), float(fy[i]), float(fz[i])))
+    vecs = np.array(vecs)
+    n = len(vecs)
+    colors = plt.cm.viridis(np.linspace(0, 1, n))
+
+    fig = plt.figure(figsize=(9.5, 8.5))
+    ax = fig.add_subplot(111, projection="3d")
+    for i in range(n):
+        fx, fy, fz = vecs[i]
+        ax.quiver(0, 0, 0, fx, fy, fz, color=colors[i], lw=1.6, arrow_length_ratio=0.1)
+        ax.text(fx, fy, fz, " %d" % (i + 1), fontsize=7, color="0.25")
+    ax.scatter(vecs[:, 0], vecs[:, 1], vecs[:, 2], color=colors, s=18, depthshade=False)
+    ax.scatter([0], [0], [0], color="k", s=25)
+
+    r = (float(np.abs(vecs).max()) * 1.1) or 1.0
+    ax.set_xlim(-r, r)
+    ax.set_ylim(-r, r)
+    ax.set_zlim(-r, r)
+    try:
+        ax.set_box_aspect((1, 1, 1))  # true directions (equal aspect)
+    except Exception:
+        pass
+    ax.view_init(elev=18, azim=-60)
+    ax.set_xlabel("Fx (N)")
+    ax.set_ylabel("Fy (N)")
+    ax.set_zlabel("Fz (N)")
+    ax.set_title("Peak contact-force vector per indentation  --  '%s'\n"
+                 "(3D quiver from origin; colour = poke order; Fz-dominant => arrows point down)" % name)
+    fig.tight_layout()
+    return fig
+
+
 def perpoke_figure(name, batch_dir):
     poke_files = sorted(f for f in os.listdir(os.path.join(batch_dir, "pokes")) if f.endswith("_ft.csv"))
     if not poke_files:
@@ -237,6 +318,13 @@ def main():
         fig = overview_figure(name, offset, data, windows, step, events=events)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
+        rf = resultant_figure(name, data, windows, step)
+        pdf.savefig(rf, dpi=150)
+        plt.close(rf)
+        v3 = vector3d_figure(name, batch_dir)
+        if v3 is not None:
+            pdf.savefig(v3, dpi=150)
+            plt.close(v3)
         pp = perpoke_figure(name, batch_dir)
         if pp is not None:
             pdf.savefig(pp, dpi=150)

@@ -53,6 +53,14 @@ CameraSessionWorker::CameraSessionWorker(QObject *parent) :
     // hooking it here covers both. These emit on this worker's thread; the
     // connections to WittensteinWorker (its own thread) auto-queue.
     sequence_recording_.set_recording_started_callback([this](const std::filesystem::path &raw_path) {
+        // The SDK writes a .bias sidecar next to every .raw, but nothing records
+        // the ROI -- the .raw header always reports the full sensor geometry. Log
+        // it ourselves so a run's spatial crop stays recoverable in post.
+        std::filesystem::path roi_path = raw_path;
+        roi_path.replace_extension(".roi");
+        if (!e_bts::write_roi_sidecar(roi_path, applied_calibration_.roi, width_, height_)) {
+            std::cout << kLogPrefix << " Could not write ROI sidecar " << roi_path.string() << '\n';
+        }
         emit recordingStartedPath(QString::fromStdString(raw_path.string()));
     });
     sequence_recording_.set_recording_stopped_callback([this]() { emit recordingStopped(); });
@@ -77,6 +85,30 @@ void CameraSessionWorker::connectToCamera() {
         std::cout << kLogPrefix << " Camera opened: " << width_ << "x" << height_ << '\n';
 
         set_camera_runtime_error_callback(*camera_, camera_error_);
+
+        // Push the tuned biases + hardware ROI BEFORE camera_->start(): the EVK1
+        // comes up at sensor defaults every session, so without this a recording
+        // silently ignores whatever bias_tuner was used to dial in.
+        const e_bts::CameraCalibration calibration =
+            e_bts::load_camera_calibration(e_bts::default_camera_bias_path());
+        // Absolute paths: the default is cwd-relative, so a GUI launched from the
+        // wrong directory would otherwise silently record at sensor defaults.
+        std::error_code path_error;
+        std::cout << kLogPrefix << " [calib] bias file: "
+                  << std::filesystem::absolute(calibration.bias_path, path_error).string() << " ("
+                  << (calibration.bias_file_found ? "found" : "MISSING") << ")\n";
+        std::cout << kLogPrefix << " [calib] roi file : "
+                  << std::filesystem::absolute(calibration.roi_path, path_error).string() << " ("
+                  << (calibration.roi_file_found ? "found" : "MISSING") << ")\n";
+        if (!calibration.bias_file_found && !calibration.roi_file_found) {
+            std::cout << kLogPrefix << " No camera calibration found (override with $E_BTS_CAMERA_BIAS);"
+                      << " running at SENSOR DEFAULTS.\n";
+        } else if (!calibration.bias_file_found) {
+            std::cout << kLogPrefix << " No bias file; biases left at sensor defaults.\n";
+        }
+        applied_calibration_ = e_bts::apply_camera_calibration(
+            *camera_, calibration,
+            [](const std::string &message) { std::cout << kLogPrefix << " [calib] " << message << '\n'; });
 
         camera_source_.emplace(width_, height_, accumulation_time_us_);
         camera_source_->connect_to_camera(*camera_);
@@ -225,6 +257,8 @@ void CameraSessionWorker::teardownCamera(const QString &reason) {
     sequence_recording_.stop_watching();
     camera_view_active_     = false;
     circle_tracking_active_ = false;
+    // Sensor state is gone with the handle; re-applied on the next connect.
+    applied_calibration_ = e_bts::AppliedCalibration{};
 
     if (camera_) {
         camera_->stop();

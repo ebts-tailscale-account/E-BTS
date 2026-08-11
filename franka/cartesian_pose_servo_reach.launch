@@ -1,0 +1,30 @@
+<?xml version="1.0" ?>
+<!-- Same as cartesian_pose_servo.launch, but with a LARGER max_translation so the
+     arm can travel from the home/ready pose to the elastomer (~0.43 m away) in one
+     servo session. The stock cartesian_pose_servo.launch keeps the conservative
+     0.30 m clamp; use THIS launch only when you deliberately start from home.
+
+     The clamp is anchored at the controller's start pose, so from home a 0.30 m
+     sphere cannot reach the surface. 0.55 m covers the whole taught workspace with
+     margin. Backstops are unchanged: max_linear_velocity = 0.03 m/s (creep) and
+     the 20 N collision reflex in franka_control still apply.
+
+         roslaunch franka_example_controllers cartesian_pose_servo_reach.launch \
+             robot_ip:=10.1.196.5 load_gripper:=false -->
+<launch>
+  <arg name="robot_ip" />
+  <arg name="load_gripper" default="false" />
+  <arg name="robot" default="panda" />
+  <arg name="arm_id" default="$(arg robot)" />
+  <arg name="max_translation" default="0.55" />
+
+  <include file="$(find franka_control)/launch/franka_control.launch" pass_all_args="true"/>
+  <rosparam command="load"
+            file="$(find franka_example_controllers)/config/franka_example_controllers.yaml"
+            subst_value="true" />
+  <!-- Override the yaml's 0.30 m clamp for this launch only (later param wins). -->
+  <param name="cartesian_pose_servo_controller/max_translation" value="$(arg max_translation)" />
+  <node name="controller_spawner" pkg="controller_manager" type="spawner"
+        respawn="false" output="screen"
+        args="cartesian_pose_servo_controller"/>
+</launch>

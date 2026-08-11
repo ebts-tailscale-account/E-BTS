@@ -32,7 +32,12 @@ import numpy as np
 PRESS_MARGIN_M   = 0.0015  # ee_z within this of its minimum counts as "pressed"
 MIN_DWELL_S      = 1.0     # a real indentation dwells >= this (rejects transit dips)
 HOVER_M          = 0.005   # the master's hover offset above the surface
-BASELINE_SECONDS = 5.0     # mean of the first N s (no-load lead-in) = the zero offset
+BASELINE_SECONDS = 5.0     # mean of the first N s (no-load lead-in) = fallback zero
+# Per-poke tare (see tare_baseline): the sweep holds out of contact at hover for ~1 s
+# before each dip, so we zero each indentation on its OWN window -> drift cancels.
+TARE_WINDOW_S    = 0.6     # length of the no-load window used as that poke's zero
+TARE_GUARD_S     = 0.20    # end the window this far before contact (avoid touchdown)
+TARE_MIN_SAMPLES = 50      # need at least this many F/T samples, else fall back
 
 
 def find_one(pattern):
@@ -42,6 +47,35 @@ def find_one(pattern):
 
 def load_csv(path):
     return np.genfromtxt(path, delimiter=",", names=True)
+
+
+def load_phase_columns(path):
+    """(phase[str], point_index[int]) arrays aligned with load_csv's rows.
+
+    np.genfromtxt(names=True) turns the text 'phase' column into NaN, so read it
+    separately. The sweep TAGS every sample with its phase, which is far more
+    reliable than inferring contact from a depth threshold: the servo's impedance
+    controller yields under load and only reaches ~1.3-1.9 mm of a commanded 2 mm,
+    so a fixed press-margin silently drops indentations (it found 69 of 99 once).
+    """
+    with open(path) as f:
+        header = f.readline().rstrip("\n").split(",")
+    if "phase" not in header or "point_index" not in header:
+        return None, None
+    ip, ii = header.index("phase"), header.index("point_index")
+    phases, idxs = [], []
+    with open(path) as f:
+        next(f)
+        for line in f:
+            parts = line.rstrip("\n").split(",")
+            if len(parts) <= max(ip, ii):
+                continue
+            phases.append(parts[ip])
+            try:
+                idxs.append(int(float(parts[ii])))
+            except ValueError:
+                idxs.append(-1)
+    return np.array(phases), np.array(idxs, dtype=int)
 
 
 def contiguous_runs(mask):
@@ -79,10 +113,26 @@ def main():
     batch = os.path.join(args.output, run)  # the organized per-batch folder
     os.makedirs(os.path.join(batch, "pokes"), exist_ok=True)
 
-    # Inputs come from the raw dump (recordings/, as master.py + the GUI leave
-    # them) OR, if this batch was already organized, from output/<run>/ itself.
+    # master.py now gives every run its OWN folder, recordings/<run>_<stamp>/, with
+    # canonical filenames inside. Accept: a run-folder name, a path to one, or (for
+    # older runs) the flat recordings/<run>_*.<ext> layout.
+    run_dir = run if os.path.isdir(run) else os.path.join(rec, run)
+    if os.path.isdir(run_dir):
+        run = os.path.basename(os.path.normpath(run_dir))
+        batch = os.path.join(args.output, run)
+        os.makedirs(os.path.join(batch, "pokes"), exist_ok=True)
+        print("Reading run folder: %s" % run_dir)
+    else:
+        run_dir = None
+
+    # Inputs come from the run folder / the flat raw dump (recordings/) OR, if this
+    # batch was already organized, from output/<run>/ itself.
     def resolve(rec_glob, batch_name):
-        p = find_one(os.path.join(rec, rec_glob))
+        if run_dir:                                   # per-run folder, canonical names
+            pf = os.path.join(run_dir, batch_name)
+            if os.path.exists(pf):
+                return pf, True
+        p = find_one(os.path.join(rec, rec_glob))      # legacy flat layout
         if p and os.path.exists(p):
             return p, True  # from recordings -> will be moved into the batch
         pb = os.path.join(batch, batch_name)
@@ -90,6 +140,7 @@ def main():
 
     raw_path, raw_from_rec       = resolve(run + "_*.raw", "camera.raw")
     bias_path, bias_from_rec     = resolve(run + "_*.bias", "camera.bias")  # camera bias sidecar (optional)
+    roi_path, roi_from_rec       = resolve(run + "_*.roi", "camera.roi")    # hardware ROI record (optional)
     ft_path, ft_from_rec         = resolve(run + "_*_ft.csv", "ft.csv")
     franka_path, franka_from_rec = resolve(run + "_franka.csv", "franka.csv")
     meta_path, meta_from_rec     = resolve(run + "_metadata.json", "metadata.json")
@@ -109,21 +160,47 @@ def main():
     t_ft = ft["unix_time_s"]
     cam_t0 = t_ft[0]  # camera device t=0 ~= F/T recording start (both fire from begin_recording)
 
-    # --- 3. segment from Franka ee_z ---
+    # --- 3. segment the indentations ---
+    # PREFERRED: use the phase tag the sweep logs -- one window per 'dwell' point.
+    # Exact and threshold-free. Fall back to a depth threshold for older logs.
     eez = fr["ee_z"]
-    pressed = eez < (eez.min() + args.press_margin)
-    windows = []
-    for a, b in contiguous_runs(pressed):
-        if t_fr[b] - t_fr[a] >= MIN_DWELL_S:
-            windows.append((t_fr[a], t_fr[b]))
-    print("Detected %d indentation windows (expected 16)." % len(windows))
+    phase_arr, pidx_arr = load_phase_columns(franka_path)
+    windows, window_pids = [], []
+    if phase_arr is not None and phase_arr.size == eez.size and (phase_arr == "dwell").any():
+        dwell = phase_arr == "dwell"
+        for pid in sorted(set(pidx_arr[dwell].tolist())):
+            sel = dwell & (pidx_arr == pid)
+            if not sel.any():
+                continue
+            ts = t_fr[sel]
+            if ts.max() - ts.min() < MIN_DWELL_S * 0.5:
+                continue
+            windows.append((ts.min(), ts.max()))
+            window_pids.append(pid)
+        pressed = dwell
+        print("Detected %d indentation windows (from the logged 'dwell' phase)."
+              % len(windows))
+    else:
+        if "surface_z" in (fr.dtype.names or ()):
+            pressed = eez < (fr["surface_z"] - args.press_margin)
+        else:
+            pressed = eez < (eez.min() + args.press_margin)
+        for a, b in contiguous_runs(pressed):
+            if t_fr[b] - t_fr[a] >= MIN_DWELL_S:
+                windows.append((t_fr[a], t_fr[b]))
+                window_pids.append(None)
+        print("Detected %d indentation windows (depth threshold, margin %.1f mm)."
+              % (len(windows), args.press_margin * 1e3))
     if not windows:
         sys.exit("No indentations found -- check --press-margin.")
 
-    # surface estimate (median ee_z while NOT pressed) -> depth per poke
+    # Fallback surface estimate (median ee_z while NOT pressed). New logs carry the
+    # MAPPED surface height per sample, so each poke uses its own real reference.
     surface_z = np.median(eez[~pressed]) - HOVER_M
+    has_surface_z = "surface_z" in (fr.dtype.names or ())
 
-    # --- 2. zero baselines from the first BASELINE_SECONDS (no-load lead-in) ---
+    # --- 2. zero baselines ---
+    # GLOBAL fallback: the no-load lead-in at the very start of the recording.
     base_end = t_ft[0] + BASELINE_SECONDS
     ft_pre = t_ft < base_end
     fr_pre = t_fr < base_end
@@ -132,43 +209,91 @@ def main():
     fr_wrench = ["Fx_ext_N", "Fy_ext_N", "Fz_ext_N", "Tx_ext_Nm", "Ty_ext_Nm", "Tz_ext_Nm"]
     fr_base = {c: (fr[c][fr_pre].mean() if fr_pre.any() else 0.0) for c in fr_wrench}
 
+    def tare_baseline(t_contact):
+        """PER-POKE tare: mean F/T over the no-load hover window just before contact.
+
+        The sweep holds still out of contact for TARE_S at hover height immediately
+        before each dip, so this window is a fresh zero for THIS indentation. Using it
+        instead of one global baseline cancels the Wittenstein's Fz drift over a long
+        run. Falls back to the global baseline if the window is too sparse.
+        """
+        lo = t_contact - TARE_GUARD_S - TARE_WINDOW_S
+        hi = t_contact - TARE_GUARD_S
+        w = (t_ft >= lo) & (t_ft <= hi)
+        if w.sum() < TARE_MIN_SAMPLES:
+            return ft_base, False
+        return {c: ft[c][w].mean() for c in ft_cols}, True
+
     outdir = os.path.join(batch, "pokes")
+    # Prefer the real per-sample col/row logged by the servo sweep (works for any
+    # grid size); fall back to the assumed snake order only for old 16-point CSVs.
+    fr_names = fr.dtype.names or ()
+    has_grid_cols = "col" in fr_names and "row" in fr_names
     order = snake_order() if len(windows) == 16 else [(None, None)] * len(windows)
 
     # --- per-poke summary + F/T force-curve slices ---
     summary = []
+    n_tared = 0
     for k, (t0, t1) in enumerate(windows, 1):
-        col, row = order[k - 1]
-
         m_fr = (t_fr >= t0) & (t_fr <= t1)
+
+        if has_grid_cols:
+            cvals, rvals = fr["col"][m_fr], fr["row"][m_fr]
+            col = int(np.median(cvals)) if cvals.size else None
+            row = int(np.median(rvals)) if rvals.size else None
+            col = None if col is None or col < 0 else col   # -1 = unset sentinel
+            row = None if row is None or row < 0 else row
+        else:
+            col, row = order[k - 1]
+
         m_ft = (t_ft >= t0) & (t_ft <= t1)
         ee_x, ee_y = fr["ee_x"][m_fr].mean(), fr["ee_y"][m_fr].mean()
         ee_z_min = eez[m_fr].min()
 
-        fz_ft = ft["Fz_N"][m_ft] - ft_base["Fz_N"]
+        # PER-POKE TARE: zero this indentation on its own pre-contact hover window
+        poke_base, tared = tare_baseline(t0)
+        n_tared += int(tared)
+
+        fz_ft = ft["Fz_N"][m_ft] - poke_base["Fz_N"]
         peak_fz_ft = fz_ft[np.argmax(np.abs(fz_ft))] if fz_ft.size else float("nan")
         mean_fz_ft = fz_ft.mean() if fz_ft.size else float("nan")
+        res_ft = np.sqrt((ft["Fx_N"][m_ft] - poke_base["Fx_N"]) ** 2 +
+                         (ft["Fy_N"][m_ft] - poke_base["Fy_N"]) ** 2 + fz_ft ** 2)
+        peak_res_ft = res_ft.max() if res_ft.size else float("nan")
         fz_ext = fr["Fz_ext_N"][m_fr] - fr_base["Fz_ext_N"]
         peak_fz_ext = fz_ext[np.argmax(np.abs(fz_ext))] if fz_ext.size else float("nan")
 
+        # true achieved depth: prefer this point's MAPPED surface height
+        if has_surface_z:
+            sz = np.nanmedian(fr["surface_z"][m_fr])
+            surf_ref = sz if np.isfinite(sz) else surface_z
+        else:
+            surf_ref = surface_z
+
         summary.append({
-            "poke": k, "col": col, "row": row,
+            "poke": k, "point_id": window_pids[k - 1], "col": col, "row": row,
             "t_start_ws": "%.6f" % t0, "t_end_ws": "%.6f" % t1, "dur_s": "%.3f" % (t1 - t0),
             "ee_x": "%.5f" % ee_x, "ee_y": "%.5f" % ee_y,
-            "indent_mm": "%.2f" % ((surface_z - ee_z_min) * 1e3),
+            "indent_mm": "%.2f" % ((surf_ref - ee_z_min) * 1e3),
+            "surface_z": "%.5f" % surf_ref,
             "peak_Fz_ft_N": "%.3f" % peak_fz_ft, "mean_Fz_ft_N": "%.3f" % mean_fz_ft,
+            "peak_F_res_N": "%.3f" % peak_res_ft,
             "peak_Fz_ext_N": "%.3f" % peak_fz_ext,
             "cam_t0_us": int((t0 - cam_t0) * 1e6), "cam_t1_us": int((t1 - cam_t0) * 1e6),
             "n_events": 0,
         })
 
-        # zeroed F/T force curve for this indentation
+        # tared F/T force curve for this indentation (zeroed on ITS pre-contact window)
         with open(os.path.join(outdir, "poke%02d_ft.csv" % k), "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["t_rel_s", "unix_time_s"] + ft_cols)
             for i in np.where(m_ft)[0]:
                 w.writerow(["%.6f" % (t_ft[i] - t0), "%.6f" % t_ft[i]] +
-                           ["%.4f" % (ft[c][i] - ft_base[c]) for c in ft_cols])
+                           ["%.4f" % (ft[c][i] - poke_base[c]) for c in ft_cols])
+
+    print("Per-poke tare: %d/%d pokes zeroed on their own pre-contact window%s."
+          % (n_tared, len(windows),
+             "" if n_tared == len(windows) else " (rest used the global baseline)"))
 
     # --- 4. event slices from the .raw (one streaming pass) ---
     if not args.no_events and raw_path:
@@ -220,6 +345,7 @@ def main():
     # --- organize the raw-dump inputs into the batch folder (clean names) ---
     for src, from_rec, dst in [(raw_path, raw_from_rec, "camera.raw"),
                                (bias_path, bias_from_rec, "camera.bias"),
+                               (roi_path, roi_from_rec, "camera.roi"),
                                (ft_path, ft_from_rec, "ft.csv"),
                                (franka_path, franka_from_rec, "franka.csv"),
                                (meta_path, meta_from_rec, "metadata.json")]:
@@ -227,11 +353,11 @@ def main():
             shutil.move(src, os.path.join(batch, dst))
 
     print("\nPer-poke summary (%s):" % summ_path)
-    print("  poke (col,row)   ee_x    ee_y   indent  peakFz_ft  peakFz_ext  n_events")
+    print("  poke (col,row)   ee_x    ee_y   indent  peakFz  peak|F|  peakFz_ext  n_events")
     for s in summary:
-        print("   %2d  (%s,%s)  %7s %7s  %5smm  %8s N %9s N  %8s" % (
-            s["poke"], s["col"], s["row"], s["ee_x"], s["ee_y"],
-            s["indent_mm"], s["peak_Fz_ft_N"], s["peak_Fz_ext_N"], s["n_events"]))
+        print("   %2d  (%s,%s)  %7s %7s  %5smm  %6s  %6s  %8s N  %8s" % (
+            s["poke"], s["col"], s["row"], s["ee_x"], s["ee_y"], s["indent_mm"],
+            s["peak_Fz_ft_N"], s["peak_F_res_N"], s["peak_Fz_ext_N"], s["n_events"]))
     print("\nDone. Batch organized in %s/  (then: python3 visualize.py %s)" % (batch, run))
 
 

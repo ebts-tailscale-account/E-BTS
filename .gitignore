@@ -26,6 +26,7 @@
 # Local Codex/agent workspace metadata
 /.codex/
 /.agents/
+/.claude/
 
 # Event-camera recordings and generated media
 *.raw
@@ -35,6 +36,7 @@
 *.mp4
 *.csv
 *.bias
+*.roi
 
 # Logs and temporary files
 *.log
@@ -46,6 +48,9 @@
 # Generated per-batch data + raw dump (regenerable, large)
 /output/
 /recordings/
+
+# Standalone camera-calibration tool build output
+/calibration/bias_tuner/build/
 
 # NumPy event slices
 *.npy

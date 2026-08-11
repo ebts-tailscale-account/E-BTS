@@ -5,6 +5,7 @@
 #include <optional>
 
 #include "../camera.h"
+#include "../camera_calibration.h"
 #include "../circle_tracking.h"
 #include "../sequence_recording_controller.h"
 
@@ -82,6 +83,10 @@ private:
     std::optional<CameraSource> camera_source_;
     std::optional<CircleTrackingSource> circle_tracking_source_;
     SequenceRecordingController sequence_recording_;
+
+    // Biases + hardware ROI pushed to the sensor at open (they do not survive
+    // between sessions). Kept so each recording can log the ROI it ran with.
+    e_bts::AppliedCalibration applied_calibration_;
 
     std::atomic_bool camera_error_{false};
     bool camera_view_active_     = false;
