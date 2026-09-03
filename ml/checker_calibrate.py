@@ -77,7 +77,7 @@ from undistort import MODELS, fit_model, normaliser, predict         # noqa: E40
 
 # Only the plane-to-plane models make sense here; lattice_affine is defined against
 # the DOME grid and has nothing to say about a checkerboard.
-CHECKER_MODELS = ("affine", "poly2", "poly3", "poly4", "tps")
+CHECKER_MODELS = ("affine", "poly2", "poly3", "poly4", "tps", "radial")
 
 
 def accumulate(raw_path, start_s, seconds, accum_us):
@@ -334,7 +334,7 @@ def radial_report(pts, dev):
     return out
 
 
-def grouped_cv(uv, xy, model, k=6, seed=0):
+def grouped_cv(uv, xy, model, k=6, seed=0, ctx=None):
     """Plain k-fold. Each square is one independent observation of a RIGID target,
     so there are no repeat-groups to leak the way the poke raster had."""
     rng = np.random.RandomState(seed)
@@ -345,7 +345,7 @@ def grouped_cv(uv, xy, model, k=6, seed=0):
         tr = ~te
         if te.sum() == 0 or tr.sum() < 12:
             continue
-        fit = fit_model(uv[tr], xy[tr], model, normaliser(uv[tr]))
+        fit = fit_model(uv[tr], xy[tr], model, normaliser(uv[tr]), ctx=ctx)
         err[te] = np.linalg.norm(predict(fit, uv[te]) - xy[te], axis=1)
     e = err[np.isfinite(err)]
     return {"model": model, "rms_mm": float(np.sqrt((e ** 2).mean())),
@@ -365,6 +365,10 @@ def main():
     ap.add_argument("--accum-us", type=float, default=40000.0)
     ap.add_argument("--model", default="poly3", choices=CHECKER_MODELS)
     ap.add_argument("--out", default=str(REPO / "calibration" / "pixel_to_mm_checker.json"))
+    ap.add_argument("--radial-k2", action="store_true",
+                    help="add the r^4 term to the radial model. Fits marginally "
+                         "better inside the board and extrapolates much worse "
+                         "outside it -- see undistort.fit_radial.")
     ap.add_argument("--bg-sigma", type=float, default=60.0,
                     help="illumination-tracking blur, in px. Should span a couple "
                          "of squares so the local mean sits between black and "
@@ -412,7 +416,8 @@ def main():
     # ---- the fit: pixel -> millimetre, anchored on the printed pitch ----------
     xy = np.column_stack([c_idx * args.square_mm, r_idx * args.square_mm]).astype(float)
     uv = pts.astype(float)
-    cvs = [grouped_cv(uv, xy, m) for m in CHECKER_MODELS]
+    rctx = {"centre0": rad["centre_px"], "use_k2": args.radial_k2}
+    cvs = [grouped_cv(uv, xy, m, ctx=rctx) for m in CHECKER_MODELS]
     print("\n  CROSS-VALIDATED RESIDUALS (6-fold over squares)")
     print("    %-8s %9s %9s %9s" % ("model", "RMS", "median", "p95"))
     for c in cvs:
@@ -423,7 +428,7 @@ def main():
     print("    affine (do nothing) %.4f mm -> best %.4f mm  = %.0f%% removed"
           % (aff, bst, 100 * (1 - bst / aff)))
 
-    fit = fit_model(uv, xy, args.model, normaliser(uv))
+    fit = fit_model(uv, xy, args.model, normaliser(uv), ctx=rctx)
     M = np.array(fit_model(uv, xy, "affine", normaliser(uv))["coeffs"])[1:].T \
         / normaliser(uv)["scale"]
     S = np.linalg.svd(M, compute_uv=False)
@@ -433,6 +438,26 @@ def main():
     print("    poke raster gave 13.153 and 14.033 px/mm; config implies 17.78 / 16.00")
 
     dome_pitch_mm = 30.9 / (0.5 * (ppm[0] + ppm[1]))
+    if fit.get("model") == "radial":
+        from undistort import radial_jacobian
+        cx, cy = fit["centre"]
+        r_data = float(np.linalg.norm(uv - np.array([cx, cy]), axis=1).max())
+        Himg, Wimg = acc.shape
+        r_cor = max(float(np.hypot(x - cx, y - cy))
+                    for x in (0, Wimg) for y in (0, Himg))
+        jd, jc = radial_jacobian(fit, r_data), radial_jacobian(fit, r_cor)
+        print("\n  EXTRAPOLATION TO THE FRAME CORNERS")
+        print("    board reaches r = %.0f px; the corner is r = %.0f px "
+              "(%.0f%% beyond the data)" % (r_data, r_cor, 100 * (r_cor / r_data - 1)))
+        print("    radial derivative: %.3f at the board edge, %.3f at the corner"
+              % (jd, jc))
+        if jc < 0.30:
+            print("    ⚠ %.3f is close to a fold -- the corners of a full-frame render")
+            print("      are an artefact, not a measurement. Drop --radial-k2." % jc)
+        else:
+            print("    the map stays well-conditioned out to the corners, so a "
+                  "full-frame\n    render is meaningful there.")
+
     print("\n  CROSS-CHECK -- was the board at the marker plane?")
     print("    the sensor's dome lattice is 30.9 px; at this scale that is %.3f mm."
           % dome_pitch_mm)
@@ -456,7 +481,12 @@ def main():
         "image_size": [int(acc.shape[1]), int(acc.shape[0])],
         "frame": "checkerboard plane, millimetres",
         "pixel_to_mm": fit,
-        "mm_to_pixel": fit_model(xy, uv, args.model, normaliser(xy)),
+        # radial inverts ANALYTICALLY (see undistort.radial_invert); refitting
+        # a reverse model would disagree with the forward one by its own
+        # residual and the round trip would not return the pixel it started at.
+        "mm_to_pixel": (dict(fit, model="radial_inverse")
+                        if args.model == "radial"
+                        else fit_model(xy, uv, args.model, normaliser(xy))),
         "cross_validated_residuals_mm": cvs,
         "px_per_mm": [float(ppm[0]), float(ppm[1])],
         "anisotropy": float(S[0] / S[1]),

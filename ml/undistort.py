@@ -57,7 +57,128 @@ import numpy as np
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_PATH = REPO / "calibration" / "pixel_to_mm.json"
 
-MODELS = ("affine", "poly2", "poly3", "poly4", "tps", "lattice_affine")
+MODELS = ("affine", "poly2", "poly3", "poly4", "tps", "lattice_affine", "radial")
+
+
+# =============================================================================
+#  the radial model -- the only one that may be used outside its own data
+# =============================================================================
+#
+# Every other model here is a surface fitted through the points it was given. Ask a
+# poly3 what happens two centimetres past the last calibration point and it answers
+# with whatever its cubic term does there, confidently and wrongly. That matters on
+# this rig because the calibration target -- dome grid or printed board -- covers
+# the middle of the sensor and not the corners, so the corners are always
+# extrapolation.
+#
+# A radial model is different in kind: it says the lens displaces every point along
+# the ray from the optical centre by (1 + k1 r^2 + k2 r^4), which is a statement
+# about the optics rather than a curve through some measurements. It has four
+# nonlinear parameters instead of ten free coefficients, it cannot fold or wander,
+# and it is measured to describe 93% of this lens's deviation (checkerboard) and
+# 96-97% (dome lattice). Extrapolating it to the frame corners is a mild claim;
+# extrapolating a polynomial there is not.
+#
+# Fitted as: rectify the pixel radially, then an affine takes it to millimetres.
+# The affine is linear given the radial parameters, so only 4 numbers need
+# searching and they are found by coordinate descent from the diagnostic's estimate.
+
+def radial_apply(uv, centre, k):
+    """Undo radial distortion: p -> c + (p - c) * (1 + k1 r^2 + k2 r^4)."""
+    uv = np.atleast_2d(np.asarray(uv, float))
+    c = np.asarray(centre, float)
+    d = uv - c
+    r2 = (d ** 2).sum(1)
+    f = 1.0 + k[0] * r2 + k[1] * r2 * r2
+    return c + d * f[:, None]
+
+
+def radial_invert(p_rect, centre, k, iters=12):
+    """Rectified pixel -> distorted pixel. Newton on the radius.
+
+    The forward map scales a radius by (1 + k1 r^2 + k2 r^4), which has no closed
+    inverse, but it is monotonic over any sane field so Newton from r_u converges
+    in a handful of steps. Solved on the RADIUS rather than refitting a second
+    model backwards: an independently fitted reverse polynomial would disagree with
+    the forward one by its own residual, and round-tripping would not return the
+    pixel you started from.
+    """
+    p_rect = np.atleast_2d(np.asarray(p_rect, float))
+    c = np.asarray(centre, float)
+    d = p_rect - c
+    r_u = np.linalg.norm(d, axis=1)
+    r = r_u.copy()
+    for _ in range(iters):
+        r2 = r * r
+        f = 1.0 + k[0] * r2 + k[1] * r2 * r2
+        g = r * f - r_u
+        dg = f + r * (2.0 * k[0] * r + 4.0 * k[1] * r * r2)
+        r = r - g / np.where(np.abs(dg) < 1e-12, 1e-12, dg)
+    scale = np.where(r_u < 1e-9, 1.0, r / np.maximum(r_u, 1e-12))
+    return c + d * scale[:, None]
+
+
+def _radial_affine(uv, xy, centre, k):
+    p = radial_apply(uv, centre, k)
+    A = np.column_stack([np.ones(len(p)), p])
+    sol, *_ = np.linalg.lstsq(A, xy, rcond=None)
+    res = xy - A @ sol
+    return sol, float(np.sqrt((res ** 2).sum(1).mean()))
+
+
+def radial_jacobian(fit, r):
+    """d(rectified radius)/d(distorted radius). Near zero means the map is folding."""
+    k = fit["k"]
+    f = 1.0 + k[0] * r ** 2 + k[1] * r ** 4
+    return f + r * (2.0 * k[0] * r + 4.0 * k[1] * r ** 3)
+
+
+def fit_radial(uv, xy, centre0=None, iters=200, use_k2=False):
+    """Coordinate descent on (cx, cy, k1[, k2]); the affine is solved exactly inside.
+
+    ⚠ k2 IS OFF BY DEFAULT, and that is not timidity about overfitting -- inside the
+    data both fits are equally good. It is about what happens OUTSIDE it, which is
+    the whole reason to prefer a radial model in the first place.
+
+    The calibration target never reaches the frame corners: on the 3 mm board the
+    squares span r = 27..300 px while the corner sits at r = 411, so any corner
+    pixel is a 37% extrapolation in radius. A quartic term fitted over the inner
+    300 px is unconstrained out there and grows fastest exactly where nothing
+    measured it. Measured on this rig, the radial magnification derivative with k2
+    in the fit falls 0.717 -> 0.143 between the board edge and the frame corner: at
+    0.143 the warp is most of the way to folding, and it showed up as a local scale
+    of 26.7 px/mm against 14.4 at the centre, which is not a lens, it is an
+    artefact. Without k2 the same derivative holds at 0.543.
+
+    The cost of leaving it out is 0.1288 mm against 0.1216 mm cross-validated --
+    0.007 mm, well under the calibration's own residual. Cheap insurance.
+    """
+    uv = np.atleast_2d(np.asarray(uv, float))
+    xy = np.atleast_2d(np.asarray(xy, float))
+    c0 = np.asarray(centre0, float) if centre0 is not None else uv.mean(0)
+    par = np.array([c0[0], c0[1], 0.0, 0.0])
+    step = np.array([32.0, 32.0, 4e-7, 4e-13 if use_k2 else 0.0])
+    _sol, best = _radial_affine(uv, xy, par[:2], par[2:])
+    n_par = 4 if use_k2 else 3
+    for _ in range(iters):
+        improved = False
+        for i in range(n_par):
+            for s in (1.0, -1.0):
+                trial = par.copy()
+                trial[i] += s * step[i]
+                _sol, r = _radial_affine(uv, xy, trial[:2], trial[2:])
+                if r < best - 1e-13:
+                    best, par, improved = r, trial, True
+        if not improved:
+            step *= 0.5
+            if step[0] < 1e-3 and step[2] < 1e-12:
+                break
+    sol, best = _radial_affine(uv, xy, par[:2], par[2:])
+    return {"model": "radial",
+            "centre": [float(par[0]), float(par[1])],
+            "k": [float(par[2]), float(par[3])],
+            "affine": np.asarray(sol).tolist(),
+            "rms_mm": best}
 
 # How many fixed-point steps to invert the measured node grid. The map is very
 # nearly affine, so this converges in two; four is the belt.
@@ -210,6 +331,9 @@ def fit_model(uv, xy, model, norm, tps_lambda=1e-3, ctx=None):
     """
     uv = np.atleast_2d(np.asarray(uv, float))
     xy = np.atleast_2d(np.asarray(xy, float))
+    if model == "radial":
+        return fit_radial(uv, xy, centre0=(ctx or {}).get("centre0"),
+                          use_k2=bool((ctx or {}).get("use_k2", False)))
     if model == "lattice_affine":
         if not ctx or "node_px" not in ctx or "lattice" not in ctx:
             raise ValueError("lattice_affine needs ctx={'node_px':..., 'lattice':...}")
@@ -251,6 +375,15 @@ def _node_px_array(raw):
 def predict(fit, uv):
     """Evaluate a fitted warp. -> (n, 2)."""
     uv = np.atleast_2d(np.asarray(uv, float))
+    if fit["model"] == "radial":
+        p = radial_apply(uv, fit["centre"], fit["k"])
+        return np.column_stack([np.ones(len(p)), p]) @ np.array(fit["affine"])
+    if fit["model"] == "radial_inverse":
+        # mm -> rectified pixel through the affine's inverse, then radially back out
+        A = np.array(fit["affine"])                       # (3,2): [1,px,py] -> mm
+        M = A[1:].T
+        p = np.linalg.solve(M, (uv - A[0]).T).T
+        return radial_invert(p, fit["centre"], fit["k"])
     norm = fit["norm"]
     if fit["model"] == "lattice_affine":
         node_px = _node_px_array(fit["node_px"])
