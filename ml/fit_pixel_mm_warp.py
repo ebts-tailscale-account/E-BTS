@@ -485,8 +485,27 @@ def make_figure(path, node_px, dev, dev_stats, rad, pairs, cvs, best_fit, lat):
         for i, v in enumerate(vals):
             a.text(i, v, " %.3f" % v, ha="center", va="bottom", fontsize=9)
         a.set_ylabel("cross-validated RMS residual (mm)")
-        a.set_title("what de-fisheyeing actually buys\n"
-                    "(affine is the do-nothing baseline)", fontsize=10)
+        a.tick_params(axis="x", labelrotation=30, labelsize=8)
+
+        # ⚠ THIS CHART LIES WHEN THE ESTIMATOR IS THE LIMIT, so say so on the chart.
+        # The contact position comes from a divergence peak on the 13x17 lattice; when
+        # its repeat-to-repeat scatter is comparable to the residual, every model piles
+        # up at that floor and the bars become indistinguishable. Read naively that
+        # says "distortion does not matter", which is the opposite of true -- the domes
+        # measure it at sub-pixel precision and four independent runs agree. What the
+        # flat bars actually mean is that THIS validator cannot see the effect.
+        floor = pairs.get("repeat_mm")
+        spread = max(vals) - min(vals)
+        if floor and floor > 0.5 * spread:
+            a.axhline(floor, color="#c33", ls="--", lw=1.4)
+            a.text(len(names) - 0.5, floor, " contact-estimator\n floor %.2f mm" % floor,
+                   color="#c33", fontsize=8, va="bottom", ha="right")
+            a.set_title("MODELS ARE NOT SEPARABLE HERE\n"
+                        "the estimator floor exceeds the spread between them",
+                        fontsize=10, color="#c33")
+        else:
+            a.set_title("what de-fisheyeing actually buys\n"
+                        "(affine is the do-nothing baseline)", fontsize=10)
     else:
         a = ax[1]
         txt = ("lattice pitch %.2f x %.2f px\norigin (%.1f, %.1f)\n\n"
@@ -629,7 +648,12 @@ def main():
             cvs.append(grouped_cv(uv, xy, grp, m, k=args.folds, ctx=ctx))
         best_fit = fit_model(uv, xy, args.model, norm, ctx=ctx)
         geom = affine_geometry(fit_model(uv, xy, "affine", norm))
-        pairs = {"uv": uv, "xy": xy, "groups": grp, "depths": dep}
+        # repeatability in MILLIMETRES, so it is directly comparable with the
+        # residuals rather than needing the reader to convert it in their head
+        rep_mm = (rep * 0.5 * (1.0 / geom["px_per_mm_major"] +
+                               1.0 / geom["px_per_mm_minor"])) if rep else None
+        pairs = {"uv": uv, "xy": xy, "groups": grp, "depths": dep,
+                 "repeat_px": rep, "repeat_mm": rep_mm}
 
         print("\n  CROSS-VALIDATED RESIDUALS (grouped by raster point)")
         print("    %-8s %8s %8s %8s %8s" % ("model", "RMS", "median", "p95", "max"))
@@ -685,6 +709,11 @@ def main():
         "radial_fit": rad,
         "node_px": np.where(np.isfinite(node_px), node_px, None).tolist(),
         "node_seen": seen.tolist(),
+        # Recorded because it is the number that decides whether the residual table
+        # means anything: when it is comparable to the residuals, the models are not
+        # separable and the table says nothing about the lens either way.
+        "contact_repeatability_px": pairs.get("repeat_px"),
+        "contact_repeatability_mm": pairs.get("repeat_mm"),
         "n_pairs": int(len(pairs["uv"])),
         "n_raster_points": int(len(np.unique(pairs["groups"]))),
         "detector_radius_px": args.radius_px,
