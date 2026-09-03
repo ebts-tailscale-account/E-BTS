@@ -252,6 +252,11 @@ def main():
                     help="rectified scale (default: the calibration's measured mean)")
     ap.add_argument("--pad-mm", type=float, default=1.0)
     ap.add_argument("--overlay", choices=("grid", "none"), default="grid")
+    ap.add_argument("--no-labels", action="store_true",
+                    help="drop the panel captions and clock too. With --overlay none "
+                         "this gives a bare A/B, which is the honest way to look at "
+                         "the imagery itself -- but note that 16 px on a 640 px field "
+                         "is genuinely hard to see without a reference.")
     args = ap.parse_args()
 
     run = resolve_run(args.run)
@@ -310,7 +315,7 @@ def main():
     rw = int(round(W * ph / float(H)))
     gap = 12
     vw = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"),
-                         args.fps, (lw + gap + rw, ph + 34))
+                         args.fps, (lw + gap + rw, ph + (0 if args.no_labels else 34)))
     if not vw.isOpened():
         sys.exit("[ERROR] could not open the video writer for %s" % out_path)
 
@@ -338,18 +343,21 @@ def main():
 
         L = cv2.resize(L, (lw, ph), interpolation=cv2.INTER_NEAREST)
         R = cv2.resize(R, (rw, ph), interpolation=cv2.INTER_NEAREST)
-        canvas = np.zeros((ph + 34, lw + gap + rw, 3), np.uint8)
-        canvas[34:, :lw] = L
-        canvas[34:, lw + gap:] = R
-        cv2.putText(canvas, "RAW  (domes bow off the straight grid: %.1f px)" % bow_src,
-                    (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1,
-                    cv2.LINE_AA)
-        cv2.putText(canvas, "RECTIFIED  (%.1f px)" % bow_rect,
-                    (lw + gap + 8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
-                    (140, 255, 160), 1, cv2.LINE_AA)
-        cv2.putText(canvas, "t=%.2fs" % ((t0s[k] - t0s[0]) / 1e6),
-                    (lw + gap + rw - 92, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                    (180, 180, 180), 1, cv2.LINE_AA)
+        top = 0 if args.no_labels else 34
+        canvas = np.zeros((ph + top, lw + gap + rw, 3), np.uint8)
+        canvas[top:, :lw] = L
+        canvas[top:, lw + gap:] = R
+        if not args.no_labels:
+            cv2.putText(canvas,
+                        "RAW  (domes bow off the straight grid: %.1f px)" % bow_src,
+                        (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1,
+                        cv2.LINE_AA)
+            cv2.putText(canvas, "RECTIFIED  (%.1f px)" % bow_rect,
+                        (lw + gap + 8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
+                        (140, 255, 160), 1, cv2.LINE_AA)
+            cv2.putText(canvas, "t=%.2fs" % ((t0s[k] - t0s[0]) / 1e6),
+                        (lw + gap + rw - 92, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        (180, 180, 180), 1, cv2.LINE_AA)
         vw.write(canvas)
     vw.release()
 
