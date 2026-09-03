@@ -452,8 +452,17 @@ def main():
         print("    radial derivative: %.3f at the board edge, %.3f at the corner"
               % (jd, jc))
         if jc < 0.30:
-            print("    ⚠ %.3f is close to a fold -- the corners of a full-frame render")
-            print("      are an artefact, not a measurement. Drop --radial-k2." % jc)
+            # The format spec and its argument were on different print() calls, so
+            # the guard raised TypeError instead of warning -- and took the whole
+            # run down with it, including writing the calibration. A check that
+            # crashes when it fires is worse than no check: it only misbehaves in
+            # exactly the case it exists to catch.
+            print("    ⚠ %.3f is at or past a FOLD -- the warp turns back on itself "
+                  "there." % jc)
+            print("      Corners of a full-frame render are an artefact, not a "
+                  "measurement.")
+            print("      Drop --radial-k2, or calibrate with a target that reaches "
+                  "the corners.")
         else:
             print("    the map stays well-conditioned out to the corners, so a "
                   "full-frame\n    render is meaningful there.")
