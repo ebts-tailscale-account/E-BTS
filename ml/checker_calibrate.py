@@ -98,23 +98,56 @@ def accumulate(raw_path, start_s, seconds, accum_us):
     return acc, len(frames)
 
 
-def find_squares(acc, min_area_frac=0.15, max_area_frac=4.0, close_px=5):
+def find_squares(acc, min_area_frac=0.15, max_area_frac=4.0, close_px=5,
+                 bg_sigma=60.0, thresh_rel=1.0):
     """Centroids of the BLACK squares: event-sparse islands in an event-dense field.
 
     White paper reflects the flicker and fires events; the printed black squares do
-    not. So the squares are the LOW-count regions, and Otsu on the smoothed count
-    image separates them without a hand-set threshold.
+    not. So the squares are the LOW-count regions.
+
+    ⚠ A GLOBAL THRESHOLD DOES NOT WORK ON THIS RIG, and fails in a way that looks
+    like a lens problem. The two LED pairs flicker out of phase and their overlap
+    in the middle of the frame produces few events on purpose (AGENTS.md: the dark
+    horizontal band is a design feature, not a defect), and the corners vignette on
+    top of that. Otsu then cannot tell a printed black square from badly lit white
+    paper: on the first 12 s capture it merged the squares into vertical strips,
+    found 20 of ~72, and reported the distortion as BARREL at 9% explained -- the
+    opposite sign to four independent measurements.
+
+    So threshold on LOCAL CONTRAST instead, the same trick marker_overlay._mask
+    uses for the domes: divide by a large-sigma blur of the image itself. Over a
+    window spanning a couple of squares that blur is the mean of black and white,
+    so the ratio crosses 1.0 at the ink boundary no matter how the scene is lit.
     """
-    img = acc / max(acc.max(), 1e-9)
-    u8 = np.clip(img * 255, 0, 255).astype(np.uint8)
-    sm = cv2.GaussianBlur(u8, (0, 0), 2.0)
-    _t, white = cv2.threshold(sm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    bg = cv2.GaussianBlur(acc.astype(np.float32), (0, 0), bg_sigma)
+    sm = cv2.GaussianBlur(acc.astype(np.float32), (0, 0), 2.0)
+    ratio = sm / np.maximum(bg, 1e-6)
+    white = (ratio > thresh_rel).astype(np.uint8) * 255
 
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_px, close_px))
     white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, k)
     white = cv2.morphologyEx(white, cv2.MORPH_OPEN, k)
 
     inv = 255 - white
+
+    # BREAK THE NECKS. The white separators between ROWS come out thinner than the
+    # ones between columns on this rig, so neighbouring black squares fuse into
+    # vertical dominoes: the previous pass returned 27 blobs for ~72 squares, each
+    # one a square plus a bridge into the square below, and the centroids landed
+    # between two squares rather than on either.
+    #
+    # Eroding the black mask cuts a thin bridge long before it eats a square, and
+    # erosion by a symmetric structuring element leaves a symmetric shape's
+    # centroid exactly where it was -- so this costs no accuracy, unlike lowering
+    # the threshold, which would shave the squares asymmetrically wherever the
+    # illumination gradient runs across them.
+    n0, _l0, st0, _c0 = cv2.connectedComponentsWithStats(inv, 8)
+    if n0 > 3:
+        side = float(np.median(np.sqrt(st0[1:, cv2.CC_STAT_AREA].astype(float))))
+        er = int(max(1, round(side / 6.0)))
+        ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * er + 1, 2 * er + 1))
+        inv = cv2.erode(inv, ker)
+
     n, lab, st, cen = cv2.connectedComponentsWithStats(inv, 8)
     H, W = acc.shape
     blobs = []
@@ -127,7 +160,7 @@ def find_squares(acc, min_area_frac=0.15, max_area_frac=4.0, close_px=5):
         if x <= 1 or y <= 1 or x + w >= W - 1 or y + h >= H - 1:
             continue                       # clipped by the frame edge
         blobs.append((cen[i][0], cen[i][1], a, w, h))
-    if len(blobs) < 12:
+    if len(blobs) < 8:
         sys.exit("[ERROR] only %d square candidates -- check the capture actually "
                  "shows the board." % len(blobs))
     b = np.array(blobs)
@@ -135,7 +168,69 @@ def find_squares(acc, min_area_frac=0.15, max_area_frac=4.0, close_px=5):
     keep = (b[:, 2] > min_area_frac * med) & (b[:, 2] < max_area_frac * med)
     asp = b[:, 3] / np.maximum(b[:, 4], 1)
     keep &= (asp > 0.5) & (asp < 2.0)
-    return b[keep][:, :2], white
+    seeds = b[keep]
+
+    # ---- second pass: matched filter + non-maximum suppression --------------
+    # Connected components CANNOT recover here, however the threshold is tuned.
+    # On this board the white separators between ROWS are thinner than between
+    # columns, so at any threshold that keeps the faint ones the squares fuse into
+    # vertical dominoes, and at any threshold that separates them the dim squares
+    # vanish: the two blob passes returned 27 and 20 of about 72, and eroding to
+    # break the necks is what ate the rest.
+    #
+    # A matched filter has no such failure mode. Correlating "how far below the
+    # local mean is this pixel" with a disc the size of a square peaks once per
+    # square, and non-maximum suppression at a fraction of the pitch then returns
+    # exactly one detection per square whether or not its neighbours touch it.
+    # The blob pass survives only to supply the SCALE the filter needs.
+    side = float(np.median(np.sqrt(seeds[:, 2].astype(float)))) if len(seeds) else 20.0
+    side = float(np.clip(side, 6.0, min(H, W) / 4.0))
+
+    dark = np.clip(1.0 - ratio, 0.0, None).astype(np.float32)
+    resp = cv2.GaussianBlur(dark, (0, 0), max(1.0, side / 3.0))
+
+    # peak spacing: nearest same-colour square in a staggered layout is one cell
+    min_sep = max(3.0, 0.70 * side)
+    k = int(2 * round(min_sep / 2.0) + 1)
+    localmax = cv2.dilate(resp, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    peaks = (resp >= localmax - 1e-9) & (resp > 0.25 * float(resp.max()))
+    ys, xs = np.nonzero(peaks)
+
+    # ⚠ DARKNESS ALONE DOES NOT MEAN "PRINTED SQUARE". Outside the board there are
+    # no events at all, so `dark` saturates there exactly as it does on ink, and the
+    # filter happily returned a column of phantom squares in the black surround --
+    # visible in the debug image as indices like (1,-1), (3,-1), (5,11), i.e. off
+    # the board on both sides. They then dragged the lattice fit: the median residual
+    # stayed at 0.18 mm while the RMS blew out to 0.70.
+    #
+    # A real square is dark INSIDE an illuminated region, so gate on the local
+    # illumination envelope -- the same sigma-60 blur already used as the contrast
+    # reference. On the board it runs to tens or hundreds of counts; outside it is
+    # under one.
+    bg_gate = 0.15 * float(np.percentile(bg, 99))
+
+    pts = []
+    half = int(max(2, round(side * 0.55)))
+    n_bg = 0
+    for y, x in zip(ys, xs):
+        if x < 2 or y < 2 or x >= W - 2 or y >= H - 2:
+            continue
+        if bg[y, x] < bg_gate:
+            n_bg += 1
+            continue
+        x0, x1 = max(0, x - half), min(W, x + half + 1)
+        y0, y1 = max(0, y - half), min(H, y + half + 1)
+        w_ = dark[y0:y1, x0:x1]
+        s = float(w_.sum())
+        if s <= 1e-6:
+            continue
+        gy, gx = np.mgrid[y0:y1, x0:x1]
+        pts.append(((gx * w_).sum() / s, (gy * w_).sum() / s))
+    if len(pts) < 12:
+        sys.exit("[ERROR] matched filter found only %d squares." % len(pts))
+    if n_bg:
+        print("  (rejected %d dark peaks outside the illuminated board)" % n_bg)
+    return np.array(pts, float), white
 
 
 def cluster(v, tol):
@@ -270,6 +365,10 @@ def main():
     ap.add_argument("--accum-us", type=float, default=40000.0)
     ap.add_argument("--model", default="poly3", choices=CHECKER_MODELS)
     ap.add_argument("--out", default=str(REPO / "calibration" / "pixel_to_mm_checker.json"))
+    ap.add_argument("--bg-sigma", type=float, default=60.0,
+                    help="illumination-tracking blur, in px. Should span a couple "
+                         "of squares so the local mean sits between black and "
+                         "white (default 60).")
     ap.add_argument("--debug-png", default=None)
     args = ap.parse_args()
 
@@ -288,7 +387,7 @@ def main():
     print("  accumulated  : %d frames over %.1f s (peak count %d)"
           % (nfr, args.seconds, int(acc.max())))
 
-    pts, white = find_squares(acc)
+    pts, white = find_squares(acc, bg_sigma=args.bg_sigma)
     print("  squares      : %d detected" % len(pts))
 
     rms_px, phase, c_idx, r_idx, pitch_px, sol, dev = index_lattice(pts)
