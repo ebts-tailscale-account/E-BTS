@@ -121,28 +121,34 @@ def draw_overlay(img, pos, pred, ok):
     return img
 
 
-def build_rectify_map(cal, px_per_mm, pad_mm):
+def build_rectify_map(cal, px_per_mm, pad_mm, ref_node, frame_hw=(480, 640),
+                      masked=True):
     """Output-pixel -> source-pixel maps for cv2.remap, plus the valid-region mask.
 
-    The mask is the polygon of the OUTERMOST MEASURED DOMES, not a per-pixel
-    round-trip test. Both give the same region; the polygon costs milliseconds
-    where inverting the node table 300k times costs minutes, and the boundary of
-    the calibrated field is exactly the boundary of the domes anyway.
+    Works for ANY calibration. An earlier version read the dome grid out of the
+    calibration file, which only the dome fit carries, so pointing it at the
+    checkerboard fit was a bare KeyError. Two changes make it general:
+
+      * the output extent comes from the FRAME BORDER pushed through pixel_to_mm
+        rather than from the calibration's stored features, so the whole sensor
+        stays in view instead of being cropped to whatever the target covered;
+      * the mask comes from `ref_node`, the features measured in THIS recording,
+        supplied by the caller. That is the more honest boundary anyway: it marks
+        where this frame has data, not where some other run's target happened to sit.
     """
-    node = node_array(cal.d["node_px"])
-    rows, cols = node.shape[:2]
-    ok = np.isfinite(node[..., 0])
+    Hf, Wf = frame_hw
 
-    nm = np.full((rows, cols, 2), np.nan)
-    idx = np.argwhere(ok)
-    xs, ys = cal.pixel_to_mm(node[ok][:, 0], node[ok][:, 1])
-    nm[ok] = np.column_stack([xs, ys])
-    good = np.isfinite(nm[..., 0])
-    if good.sum() < 10:
-        sys.exit("[ERROR] the calibration maps too few domes to millimetres.")
-
-    x0, x1 = np.nanmin(nm[..., 0]) - pad_mm, np.nanmax(nm[..., 0]) + pad_mm
-    y0, y1 = np.nanmin(nm[..., 1]) - pad_mm, np.nanmax(nm[..., 1]) + pad_mm
+    # Sample the whole border, not the four corners: the warp is nonlinear, so an
+    # edge midpoint can fall outside the box the corners imply.
+    bx = np.concatenate([np.linspace(0, Wf - 1, 80), np.full(80, Wf - 1),
+                         np.linspace(Wf - 1, 0, 80), np.zeros(80)])
+    by = np.concatenate([np.zeros(80), np.linspace(0, Hf - 1, 80),
+                         np.full(80, Hf - 1), np.linspace(Hf - 1, 0, 80)])
+    mx, my = cal.pixel_to_mm(bx, by)
+    if not np.isfinite(mx).any():
+        sys.exit("[ERROR] this calibration maps none of the frame to millimetres.")
+    x0, x1 = np.nanmin(mx) - pad_mm, np.nanmax(mx) + pad_mm
+    y0, y1 = np.nanmin(my) - pad_mm, np.nanmax(my) + pad_mm
     W = int(round((x1 - x0) * px_per_mm))
     H = int(round((y1 - y0) * px_per_mm))
 
@@ -156,21 +162,28 @@ def build_rectify_map(cal, px_per_mm, pad_mm):
     map_x = np.asarray(su, np.float32).reshape(H, W)
     map_y = np.asarray(sv, np.float32).reshape(H, W)
 
-    # Valid region = the CONVEX HULL of the measured domes. An edge-walk of the node
-    # grid looks more precise and is worse: wherever a dome is missing the walk steps
-    # inward, and the polygon self-intersects into visible wedges cut out of the
-    # image. The dome field is convex, so the hull is both correct and robust to the
-    # ~10 domes that are never detected.
-    ox, oy = mm_to_out(nm[good][:, 0], nm[good][:, 1])
-    pts = np.column_stack([ox, oy]).astype(np.float32)
-    hull = cv2.convexHull(pts).astype(np.int32)
-    mask = np.zeros((H, W), np.uint8)
-    cv2.fillPoly(mask, [hull], 255)
-
-    # dome positions in the rectified image, for the overlay
-    rect_node = np.full((rows, cols, 2), np.nan)
-    gx, gy = mm_to_out(nm[good][:, 0], nm[good][:, 1])
-    rect_node[good] = np.column_stack([gx, gy])
+    # This recording's own features, carried into the rectified frame -- used for
+    # both the overlay and the mask.
+    rect_node = None
+    mask = np.full((H, W), 255, np.uint8)
+    if ref_node is not None:
+        ok = np.isfinite(ref_node[..., 0])
+        nm = np.full(ref_node.shape, np.nan)
+        xs, ys = cal.pixel_to_mm(ref_node[ok][:, 0], ref_node[ok][:, 1])
+        nm[ok] = np.column_stack([xs, ys])
+        good = np.isfinite(nm[..., 0])
+        if good.sum() >= 10:
+            ox, oy = mm_to_out(nm[good][:, 0], nm[good][:, 1])
+            rect_node = np.full(ref_node.shape, np.nan)
+            rect_node[good] = np.column_stack([ox, oy])
+            if masked:
+                # Convex hull, not an edge-walk of the grid: wherever a feature is
+                # missing the walk steps inward and the polygon self-intersects
+                # into visible wedges cut out of the image.
+                hull = cv2.convexHull(
+                    np.column_stack([ox, oy]).astype(np.float32)).astype(np.int32)
+                mask = np.zeros((H, W), np.uint8)
+                cv2.fillPoly(mask, [hull], 255)
 
     return map_x, map_y, mask, rect_node, (W, H), (x1 - x0, y1 - y0)
 
@@ -192,7 +205,7 @@ def measure_transfer(run, grid_dir, cal, ppm):
               "    shown is the CALIBRATION run's, which its own model straightens\n"
               "    by construction and therefore proves nothing here." % run.name)
         dv = cal.d.get("lattice_deviation_px", {})
-        return float(dv.get("max_px", float("nan"))), float("nan")
+        return float(dv.get("max_px", float("nan"))), float("nan"), None
 
     lat = F.load_lattice(grid_dir)
     own, seen, st = F.measure_nodes(run, lat, cal.d.get("detector_radius_px", 9.6),
@@ -206,19 +219,20 @@ def measure_transfer(run, grid_dir, cal, ppm):
     mm[ok] = np.column_stack([xs, ys])
     good = np.isfinite(mm[..., 0])
     if good.sum() < 10:
-        return raw_bow, float("nan")
+        return raw_bow, float("nan"), own
     pred_mm, _ = affine_grid_lines(mm)
     d = np.linalg.norm(mm - pred_mm, axis=-1)
     rect_bow_mm = float(np.nanmax(np.where(good, d, np.nan)))
 
     print("  transfer check: %d of %d domes in THIS run, calibration from %s"
-          % (int(ok.sum()), ok.size, cal.d.get("source_run")))
+          % (int(ok.sum()), ok.size,
+             cal.d.get("source_run") or Path(cal.d.get("source_raw", "?")).name))
     print("  dome bow off a straight grid (independent domes, not the fit's own):")
     print("    raw        %.2f px" % raw_bow)
     print("    rectified  %.2f px  (%.3f mm)" % (rect_bow_mm * ppm, rect_bow_mm))
     print("    -> %.0f%% of the bow removed"
           % (100 * (1 - (rect_bow_mm * ppm) / max(raw_bow, 1e-9))))
-    return raw_bow, rect_bow_mm * ppm
+    return raw_bow, rect_bow_mm * ppm, own
 
 
 def pick_window(run, grid_dir, seq, seconds):
@@ -252,6 +266,9 @@ def main():
                     help="rectified scale (default: the calibration's measured mean)")
     ap.add_argument("--pad-mm", type=float, default=1.0)
     ap.add_argument("--overlay", choices=("grid", "none"), default="grid")
+    ap.add_argument("--no-mask", action="store_true",
+                    help="keep the whole warped frame instead of clipping to "
+                         "the features measured in this recording")
     ap.add_argument("--no-labels", action="store_true",
                     help="drop the panel captions and clock too. With --overlay none "
                          "this gives a bare A/B, which is the honest way to look at "
@@ -267,34 +284,40 @@ def main():
 
     cal = load_cal(args.calibration)
     g = cal.d.get("affine_geometry", {})
-    ppm = args.px_per_mm or (0.5 * (g.get("px_per_mm_major", 13.5) +
-                                    g.get("px_per_mm_minor", 13.5)))
+    if args.px_per_mm:
+        ppm = args.px_per_mm
+    elif "px_per_mm" in cal.d:                       # checkerboard fit
+        ppm = float(np.mean(cal.d["px_per_mm"]))
+    else:                                            # dome fit
+        ppm = 0.5 * (g.get("px_per_mm_major", 13.5) + g.get("px_per_mm_minor", 13.5))
 
     print("\n" + "=" * 72)
     print("  UNDISTORTED VIDEO")
     print("=" * 72)
     print("  run          : %s" % run.name)
+    # the dome fit records source_run, the checkerboard fit source_raw
+    src_label = cal.d.get("source_run") or Path(cal.d.get("source_raw", "?")).name
     print("  calibration  : %s  (model %s, from %s)"
-          % (cal.path, cal.d["pixel_to_mm"]["model"], cal.d.get("source_run")))
+          % (cal.path, cal.d["pixel_to_mm"]["model"], src_label))
     print("  rectified at : %.2f px/mm" % ppm)
 
+    # Measure THIS recording's own domes first: they serve as the transfer check,
+    # the overlay reference and the mask, and none of those should be read out of
+    # the calibration file -- the checkerboard fit contains no dome grid at all,
+    # and scoring a fit on its own features is circular (see measure_transfer).
+    bow_src, bow_rect, own_node = measure_transfer(run, grid_dir, cal, ppm)
+
     map_x, map_y, mask, rect_node, (W, H), (spanx, spany) = \
-        build_rectify_map(cal, ppm, args.pad_mm)
-    print("  output size  : %d x %d px  (%.1f x %.1f mm of calibrated field)"
+        build_rectify_map(cal, ppm, args.pad_mm, own_node, frame_hw=(480, 640),
+                          masked=not args.no_mask)
+    print("  output size  : %d x %d px  (%.1f x %.1f mm of the sensor field)"
           % (W, H, spanx, spany))
 
-    src_node = node_array(cal.d["node_px"])
-    src_pred, src_ok = affine_grid_lines(src_node)
-    rect_pred, rect_ok = affine_grid_lines(rect_node)
-
-    # ⚠ DO NOT SCORE THE CALIBRATION ON ITS OWN DOMES. Under lattice_affine the
-    # rectified node grid is an affine function of lattice index BY CONSTRUCTION --
-    # the model is built from these very nodes -- so its bow is exactly 0.00 px and
-    # "100% of the distortion removed" would be a tautology, not a result.
-    # The real question is whether a calibration transfers, so the check below uses
-    # THIS run's own domes, detected independently, against a calibration fitted on
-    # a different run and a different day.
-    bow_src, bow_rect = measure_transfer(run, grid_dir, cal, ppm)
+    src_node = own_node
+    src_pred, src_ok = (affine_grid_lines(src_node) if src_node is not None
+                        else (None, None))
+    rect_pred, rect_ok = (affine_grid_lines(rect_node) if rect_node is not None
+                          else (None, None))
 
     s_us, e_us, seq_i, force = pick_window(run, grid_dir, args.seq, args.seconds)
     print("  window       : %.3f -> %.3f s%s"
@@ -337,7 +360,7 @@ def main():
 
         L = cv2.cvtColor(u8, cv2.COLOR_GRAY2BGR)
         R = cv2.cvtColor(rect, cv2.COLOR_GRAY2BGR)
-        if args.overlay == "grid":
+        if args.overlay == "grid" and src_node is not None:
             L = draw_overlay(L, src_node, src_pred, src_ok)
             R = draw_overlay(R, rect_node, rect_pred, rect_ok)
 
