@@ -21,9 +21,19 @@ struct TrackedCircle {
     CircleDetection detection;
     bool has_baseline = false;
     cv::Point2f baseline_center;
+    // Lattice index within the inferred circle map's bounding box, or -1/-1
+    // when the baseline fell back to contour tracking and there is no map.
+    // Carried through because tracks_ is COMPACTED after the map is built
+    // (unobserved sites are erased), so a track's position in the vector no
+    // longer implies its cell -- and the contact localiser differentiates the
+    // displacement field over cells, not over vector order.
+    int column = -1;
+    int row    = -1;
 };
 
 struct MarkerTrack {
+    int column = -1;
+    int row    = -1;
     cv::Point2f baseline_center;
     cv::Point2f expected_center;
     cv::Point2f last_observed_center;
@@ -85,7 +95,7 @@ public:
             std::vector<TrackedCircle> visible_detections;
             visible_detections.reserve(detections.size());
             for (const auto &detection : detections) {
-                visible_detections.push_back(TrackedCircle{detection, false, {}});
+                visible_detections.push_back(TrackedCircle{detection, false, {}, -1, -1});
             }
             return TrackingUpdate{std::move(visible_detections), false};
         }
@@ -118,7 +128,9 @@ public:
             detection_matched[candidate.detection_index] = true;
         }
 
-        return TrackingUpdate{make_tracked_circles(timestamp_us), false};
+        TrackingUpdate update_result{make_tracked_circles(timestamp_us), false};
+        refresh_search_centers(timestamp_us);
+        return update_result;
     }
 
     bool baseline_collecting() const {
@@ -180,16 +192,56 @@ public:
                                             minimum_pitch * kMapSearchRadiusInPitch)));
     }
 
+    // The BASELINE sites: where each tracked marker rests unloaded. Fixed for the
+    // life of a baseline.
     const std::vector<cv::Point2f> &circle_map_centers() const {
         return enabled_circle_map_centers_;
     }
 
+    // Where to LOOK for each marker in the next window -- which is not the same
+    // thing, and conflating the two cost this rig a 1100-poke campaign.
+    //
+    // detect_from_map() only searches +-search_radius (9.3 px here) around each
+    // centre it is given. Anchored to the baseline site, that is a hard ceiling on
+    // detectable displacement -- but a marker beside a 5 mm indent moves 15-25 px,
+    // so precisely the markers carrying the contact signal became undetectable.
+    // The measured cost, run ladder_20260906_150159: the estimated contact position
+    // moved only 0.62-0.64x as far as the indenter really did, because the
+    // divergence peak was computed from a truncated annulus that the field edge
+    // then clipped inward. Tracked markers fell 129 -> 114 from 1 mm to 5 mm.
+    //
+    // So the search follows the MARKER. Per-window motion is small (the arm creeps
+    // at 0.03 m/s and windows are 40 ms), while cumulative motion is not, and only
+    // the cumulative part was ever the problem.
+    //
+    // ⚠ A marker that has NOT been seen within the filter window falls back to its
+    // baseline site, not to a stale position. Without that, a marker lost at depth
+    // keeps being searched for where it was last seen while it has actually sprung
+    // back to rest -- and stays lost for the remainder of the run.
+    const std::vector<cv::Point2f> &circle_map_search_centers() const {
+        return search_centers_;
+    }
+
 private:
+    void refresh_search_centers(Metavision::timestamp timestamp_us) {
+        if (!circle_map_available_) {
+            return;
+        }
+        search_centers_.resize(tracks_.size());
+        for (std::size_t index = 0; index < tracks_.size(); ++index) {
+            const MarkerTrack &track = tracks_[index];
+            const bool seen_recently = !track.detection_history.empty() &&
+                                       was_seen_within_filter_window(track, timestamp_us);
+            search_centers_[index] = seen_recently ? track.last_observed_center : track.baseline_center;
+        }
+    }
+
     void begin_baseline_collection() {
         tracks_.clear();
         baseline_candidates_.clear();
         circle_map_geometry_              = {};
         enabled_circle_map_centers_.clear();
+        search_centers_.clear();
         circle_map_available_             = false;
         baseline_observed_circle_count_   = 0;
         baseline_collection_started_      = false;
@@ -326,8 +378,15 @@ private:
                                Metavision::timestamp timestamp_us) {
         tracks_.clear();
         tracks_.reserve(circle_map_geometry_.centers.size());
-        for (const auto &center : circle_map_geometry_.centers) {
+        // circle_map_geometry_.centers is row-major over the map's bounding box
+        // (see infer_circle_map), so the index IS the cell -- but only until the
+        // erase below compacts the vector. Stamp it now.
+        const int map_columns = std::max(1, circle_map_geometry_.column_count);
+        for (std::size_t site_index = 0; site_index < circle_map_geometry_.centers.size(); ++site_index) {
+            const cv::Point2f &center = circle_map_geometry_.centers[site_index];
             MarkerTrack track;
+            track.column               = static_cast<int>(site_index) % map_columns;
+            track.row                  = static_cast<int>(site_index) / map_columns;
             track.baseline_center      = center;
             track.expected_center      = center;
             track.last_observed_center = center;
@@ -378,6 +437,9 @@ private:
         for (const auto &track : tracks_) {
             enabled_circle_map_centers_.push_back(track.expected_center);
         }
+        // First window after a baseline has nothing observed yet, so the search
+        // starts at the resting sites and follows the markers from there.
+        search_centers_ = enabled_circle_map_centers_;
     }
 
     static void add_baseline_observation(BaselineCandidate &candidate,
@@ -410,7 +472,7 @@ private:
                 continue;
             }
             tracked_circles.push_back(
-                TrackedCircle{current_detection(track), true, track.baseline_center});
+                TrackedCircle{current_detection(track), true, track.baseline_center, track.column, track.row});
         }
         return tracked_circles;
     }
@@ -462,6 +524,7 @@ private:
     std::vector<BaselineCandidate> baseline_candidates_;
     CircleMapGeometry circle_map_geometry_;
     std::vector<cv::Point2f> enabled_circle_map_centers_;
+    std::vector<cv::Point2f> search_centers_;
     bool circle_map_available_ = false;
     std::size_t baseline_observed_circle_count_ = 0;
     bool baseline_collecting_          = true;

@@ -20,9 +20,23 @@ ApplicationWindow {
     property bool cameraConnected: false
     property bool cameraOpen: false
     property bool circleTrackingOpen: false
+    property bool spatterTrackingOpen: false
     property bool sequenceRecordingOpen: false
     property bool forceTorqueOpen: false
     property bool recording: false
+
+    // FrankaPoseClient lives on the GUI thread (it is just a QTimer and a
+    // QNetworkAccessManager), so QML binds to it directly -- the cameraEvents
+    // relay below exists only because cameraWorker does not.
+    Connections {
+        target: frankaPose
+        onPoseReady: {
+            circleTrackingPane.setFrankaPose(xMm, yMm)
+        }
+        onStatusChanged: {
+            circleTrackingPane.setFrankaStatus(ok, message)
+        }
+    }
 
     // Qt 5.12 (this project's target) only supports Connections' older
     // "onSignalName: { ... }" property syntax, where the signal's declared
@@ -49,6 +63,7 @@ ApplicationWindow {
             window.cameraConnected = false
             window.cameraOpen = false
             window.circleTrackingOpen = false
+            window.spatterTrackingOpen = false
             window.sequenceRecordingOpen = false
             connectionBanner.message = reason
         }
@@ -57,6 +72,15 @@ ApplicationWindow {
         }
         onTrackingFrameReady: {
             circleTrackingPane.setFrame(frame)
+        }
+        onSpatterFrameReady: {
+            spatterTrackingPane.setFrame(frame)
+        }
+        onContactEstimateReady: {
+            circleTrackingPane.setContactEstimate(valid, ambiguous, hasMm, xMm, yMm, divergence, trackedMarkers)
+        }
+        onContactCalibrationStatus: {
+            circleTrackingPane.setCalibrationStatus(ready, hasOrigin, summary)
         }
         onRecordingLogLine: {
             sequenceRecordingConsole.appendLine(line)
@@ -97,6 +121,9 @@ ApplicationWindow {
         } else if (name === "circleTracking") {
             window.circleTrackingOpen = !window.circleTrackingOpen
             cameraWorker.setCircleTrackingActive(window.circleTrackingOpen)
+        } else if (name === "spatterTracking") {
+            window.spatterTrackingOpen = !window.spatterTrackingOpen
+            cameraWorker.setSpatterTrackingActive(window.spatterTrackingOpen)
         } else if (name === "sequenceRecording") {
             window.sequenceRecordingOpen = !window.sequenceRecordingOpen
             cameraWorker.setSequenceRecordingActive(window.sequenceRecordingOpen)
@@ -117,6 +144,7 @@ ApplicationWindow {
             connected: window.cameraConnected
             cameraOpen: window.cameraOpen
             circleTrackingOpen: window.circleTrackingOpen
+            spatterTrackingOpen: window.spatterTrackingOpen
             sequenceRecordingOpen: window.sequenceRecordingOpen
             forceTorqueOpen: window.forceTorqueOpen
             recording: window.recording
@@ -125,6 +153,10 @@ ApplicationWindow {
             onToggleRecording: cameraWorker.toggleManualRecording()
             onAccumulationTimeChanged: cameraWorker.setAccumulationTimeUs(value)
             onDetectionPercentChanged: cameraWorker.setDetectionPercent(value)
+            onSpatterParamsChanged: cameraWorker.setSpatterParams(cellWidth, cellHeight, activationThreshold,
+                                                                 minSize, maxSize, maxDistance,
+                                                                 untrackedThreshold, roiX, roiY,
+                                                                 roiWidth, roiHeight)
         }
 
         Item {
@@ -136,18 +168,18 @@ ApplicationWindow {
                 anchors.fill: parent
                 spacing: 2
 
-                // Camera and Circle Tracking are two views of one shared
-                // live event stream (the EVK1 only exposes one open camera
-                // handle), so they lay out as a 50/50 split when both are
-                // open and each fills the whole row alone otherwise. An
-                // invisible child contributes no space in Qt Quick Layouts,
-                // which is what makes all the open-source combinations work
+                // Camera, Circle Tracking and Spatter Tracking are three views
+                // of one shared live event stream (the EVK1 only exposes one
+                // open camera handle), so they split this row evenly: 50/50
+                // with two open, thirds with all three, and each fills the
+                // whole row alone. An invisible child contributes no space in
+                // Qt Quick Layouts, which is what makes every combination work
                 // out of this one row without separate layout code per case.
                 RowLayout {
                     id: videoRow
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    visible: window.cameraOpen || window.circleTrackingOpen
+                    visible: window.cameraOpen || window.circleTrackingOpen || window.spatterTrackingOpen
                     spacing: 2
 
                     CameraPane {
@@ -164,6 +196,17 @@ ApplicationWindow {
                         Layout.fillHeight: true
                         onClosed: window.toggleSource("circleTracking")
                         onRebuildBaseline: cameraWorker.requestBaselineRestart()
+                        onReloadCalibration: cameraWorker.reloadContactCalibration()
+                        onFrankaLinkRequested: frankaPose.start(url)
+                        onFrankaUnlinkRequested: frankaPose.stop()
+                    }
+                    SpatterTrackingPane {
+                        id: spatterTrackingPane
+                        visible: window.spatterTrackingOpen
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        onClosed: window.toggleSource("spatterTracking")
+                        onResetTracks: cameraWorker.requestSpatterReset()
                     }
                 }
 
@@ -190,7 +233,7 @@ ApplicationWindow {
             Label {
                 anchors.fill: parent
                 visible: window.cameraConnected && !window.cameraOpen && !window.circleTrackingOpen &&
-                        !window.sequenceRecordingOpen && !window.forceTorqueOpen
+                        !window.spatterTrackingOpen && !window.sequenceRecordingOpen && !window.forceTorqueOpen
                 text: "No sources open. Use \"+ Add Source\" above to begin."
                 color: theme.mutedText
                 horizontalAlignment: Text.AlignHCenter

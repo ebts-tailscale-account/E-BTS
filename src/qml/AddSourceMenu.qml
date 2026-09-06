@@ -4,7 +4,7 @@ import QtQuick.Controls.Material 2.12
 
 // Persistent popup-style menu opened from the ribbon's "+ Add Source"
 // button. Not modal and not a one-shot dialog: it stays a checklist you can
-// reopen at any time to toggle any of the 3 sources on/off, mirroring how a
+// reopen at any time to toggle any of the sources on/off, mirroring how a
 // VSCode-style toolbar button behaves rather than a wizard.
 Popup {
     id: root
@@ -15,6 +15,7 @@ Popup {
 
     property bool cameraOpen: false
     property bool circleTrackingOpen: false
+    property bool spatterTrackingOpen: false
     property bool sequenceRecordingOpen: false
     property bool forceTorqueOpen: false
 
@@ -34,6 +35,11 @@ Popup {
             width: root.width - 2
             text: (root.circleTrackingOpen ? "✓  " : "     ") + "Circle Tracking"
             onClicked: root.toggleSource("circleTracking")
+        }
+        ItemDelegate {
+            width: root.width - 2
+            text: (root.spatterTrackingOpen ? "✓  " : "     ") + "Spatter Tracking"
+            onClicked: root.toggleSource("spatterTracking")
         }
         ItemDelegate {
             width: root.width - 2

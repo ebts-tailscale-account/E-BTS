@@ -16,6 +16,7 @@
 #include "gui/camera_session_worker.h"
 #include "gui/export_bridge.h"
 #include "gui/export_worker.h"
+#include "gui/franka_pose_client.h"
 #include "gui/frame_view.h"
 #include "gui/ft_graph_view.h"
 #include "gui/gui_bridge.h"
@@ -74,6 +75,13 @@ int main(int argc, char *argv[]) {
     QObject::connect(worker, &e_bts::gui::CameraSessionWorker::recordingStopped, ftWorker,
                      &e_bts::gui::WittensteinWorker::stopRecording);
 
+    // Read-only link to the robot, for checking the camera's contact estimate
+    // against the Franka's own end-effector XY while the arm is moving. Main
+    // thread: it is a timer and a network manager, nothing that blocks. Idle
+    // until the Circle Tracking pane's "Link Franka" is switched on, so a GUI
+    // running with no robot on the tailnet does nothing and says nothing.
+    auto *frankaPose = new e_bts::gui::FrankaPoseClient(&app);
+
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("cameraWorker", worker);
     engine.rootContext()->setContextProperty("cameraEvents", bridge);
@@ -81,6 +89,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("exportEvents", exportBridge);
     engine.rootContext()->setContextProperty("ftWorker", ftWorker);
     engine.rootContext()->setContextProperty("ftEvents", ftBridge);
+    engine.rootContext()->setContextProperty("frankaPose", frankaPose);
     engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
         return -1;

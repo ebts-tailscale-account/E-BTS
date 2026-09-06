@@ -4,11 +4,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
 #include "circle_detector.h"
 #include "circle_tracker_config.h"
+#include "contact_localiser.h"
 #include "event_window_buffer.h"
 #include "temporal_circle_tracker.h"
 
@@ -38,11 +40,54 @@ inline cv::Scalar rejection_color(CircleRejectionReason reason) {
     return cv::Scalar(255, 255, 255);
 }
 
+inline std::string format_millimetres(double value) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%+.2f", value);
+    return buffer;
+}
+
+// Marks the estimated contact: a crosshair at the peak plus its coordinates. The
+// crosshair sits at the peak's position in BASELINE (undeformed) pixels, which is
+// the frame the divergence field lives in -- material directly under the indenter
+// barely moves sideways, so on the live view the two coincide to well under a
+// marker.
+inline void draw_contact_overlay(cv::Mat &output, const ContactEstimate &contact, bool has_mm,
+                                 const cv::Point2d &mm) {
+    if (!contact.valid) {
+        return;
+    }
+    const cv::Point centre(cvRound(contact.pixel.x), cvRound(contact.pixel.y));
+    const cv::Scalar colour = contact.ambiguous ? cv::Scalar(0, 200, 255) : cv::Scalar(255, 255, 255);
+    const int arm = 12;
+    cv::line(output, cv::Point(centre.x - arm, centre.y), cv::Point(centre.x + arm, centre.y), colour, 1,
+             cv::LINE_AA);
+    cv::line(output, cv::Point(centre.x, centre.y - arm), cv::Point(centre.x, centre.y + arm), colour, 1,
+             cv::LINE_AA);
+    cv::circle(output, centre, 5, colour, 1, cv::LINE_AA);
+
+    const std::string label =
+        has_mm ? "x " + format_millimetres(mm.x) + "  y " + format_millimetres(mm.y) + " mm"
+               : "px " + std::to_string(cvRound(contact.pixel.x)) + "," +
+                     std::to_string(cvRound(contact.pixel.y)) + " (no mm calibration)";
+    cv::putText(output, label, cv::Point(std::min(centre.x + 14, output.cols - 200), centre.y - 8),
+                cv::FONT_HERSHEY_SIMPLEX, 0.42, colour, 1, cv::LINE_AA);
+    if (contact.ambiguous) {
+        // Advertised as a SINGLE-contact readout, so two surviving peaks make the
+        // number meaningless rather than merely uncertain. Say so on the frame.
+        cv::putText(output, "2 contacts -- estimate not single-point",
+                    cv::Point(std::min(centre.x + 14, output.cols - 260), centre.y + 8),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.38, cv::Scalar(0, 200, 255), 1, cv::LINE_AA);
+    }
+}
+
 inline cv::Mat render_tracking_frame(const EventWindow &event_window, const cv::Mat &occupied_pixels,
                                      const CircleDetectionResult &detection_result,
                                      const std::vector<TrackedCircle> &tracked_circles,
                                      const TemporalCircleTracker &tracker,
-                                     std::uint64_t dropped_window_count) {
+                                     std::uint64_t dropped_window_count,
+                                     const ContactEstimate &contact = ContactEstimate{},
+                                     bool contact_has_mm = false,
+                                     const cv::Point2d &contact_mm = cv::Point2d(0.0, 0.0)) {
     cv::Mat output = cv::Mat::zeros(occupied_pixels.size(), CV_8UC3);
     output.setTo(cv::Scalar(32, 32, 32), detection_result.candidate_mask);
 
@@ -112,6 +157,27 @@ inline cv::Mat render_tracking_frame(const EventWindow &event_window, const cv::
     }
     cv::putText(output, rejection_status, cv::Point(8, 36), cv::FONT_HERSHEY_SIMPLEX, 0.38,
                 cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+
+    std::string contact_status;
+    if (contact.valid) {
+        contact_status = "contact: ";
+        contact_status += contact_has_mm
+                              ? "x " + format_millimetres(contact_mm.x) + " y " +
+                                    format_millimetres(contact_mm.y) + " mm"
+                              : "px " + std::to_string(cvRound(contact.pixel.x)) + "," +
+                                    std::to_string(cvRound(contact.pixel.y));
+        char strength[48];
+        std::snprintf(strength, sizeof(strength), " | div %.1f coh %.2f", contact.divergence,
+                      contact.coherence);
+        contact_status += strength;
+    } else if (contact.lattice_rows > 0) {
+        contact_status = "contact: none (no divergence peak above threshold)";
+    }
+    if (!contact_status.empty()) {
+        cv::putText(output, contact_status, cv::Point(8, 54), cv::FONT_HERSHEY_SIMPLEX, 0.38,
+                    cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+    }
+    draw_contact_overlay(output, contact, contact_has_mm, contact_mm);
     return output;
 }
 

@@ -28,8 +28,14 @@ struct EventWindow {
 // contribution to the density calculation.
 class EventWindowBuffer {
 public:
-    EventWindowBuffer(int width, int height, Metavision::timestamp collection_time_us) :
+    // max_queued_windows caps the backlog. The live default deliberately drops
+    // superseded windows (see pop_latest) because a UI must stay responsive;
+    // offline readers that must not lose a window pass a large cap and drain
+    // with pop_oldest() instead.
+    EventWindowBuffer(int width, int height, Metavision::timestamp collection_time_us,
+                      std::size_t max_queued_windows = kMaximumQueuedWindows) :
         width_(width), height_(height), collection_time_us_(collection_time_us),
+        max_queued_windows_(std::max<std::size_t>(1, max_queued_windows)),
         pixel_window_ids_(static_cast<std::size_t>(width) * static_cast<std::size_t>(height), 0) {}
 
     void add_events(const Metavision::EventCD *begin, const Metavision::EventCD *end) {
@@ -51,6 +57,7 @@ public:
                 window_end_us_ = window_start_us_ + collection_time_us_;
             }
 
+            ++total_event_count_;
             if (event->x < width_ && event->y < height_) {
                 const std::uint32_t pixel_index =
                     static_cast<std::uint32_t>(event->y * width_ + event->x);
@@ -77,9 +84,47 @@ public:
         return true;
     }
 
+    // Consume the OLDEST completed window, keeping the rest of the queue. The
+    // counterpart to pop_latest for offline analysis, where windows are a
+    // measurement series and skipping one silently puts a hole in it.
+    bool pop_oldest(EventWindow &event_window) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (ready_windows_.empty()) {
+            return false;
+        }
+        event_window = std::move(ready_windows_.front());
+        ready_windows_.pop_front();
+        return true;
+    }
+
+    // Closes the window still being accumulated and queues it, so a file reader
+    // does not lose the final partial window at end of stream. No-op if empty.
+    void flush() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_current_window();
+        advance_pixel_window_id();
+        window_started_ = false;
+    }
+
     std::uint64_t dropped_window_count() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return dropped_window_count_;
+    }
+
+    // Diagnostics for "the tracking pane is black and I do not know why".
+    // A blank pane means no window was ever popped, and there are three different
+    // reasons for that which look identical on screen: no events reaching THIS
+    // buffer (the camera pane can look fine while this one starves, since they are
+    // fed by separate callbacks), events arriving but no window ever completing,
+    // or windows completing but never consumed. These two counters tell them apart.
+    std::uint64_t total_event_count() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return total_event_count_;
+    }
+
+    std::size_t queued_window_count() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return ready_windows_.size();
     }
 
     // Changes the collection window length for windows started from this point
@@ -102,7 +147,7 @@ private:
         if (current_occupied_pixel_indices_.empty()) {
             return;
         }
-        if (ready_windows_.size() == kMaximumQueuedWindows) {
+        if (ready_windows_.size() >= max_queued_windows_) {
             ready_windows_.pop_front();
             ++dropped_window_count_;
         }
@@ -123,6 +168,7 @@ private:
     int width_;
     int height_;
     Metavision::timestamp collection_time_us_;
+    std::size_t max_queued_windows_;
     mutable std::mutex mutex_;
     bool window_started_ = false;
     Metavision::timestamp window_start_us_ = 0;
@@ -132,6 +178,7 @@ private:
     std::vector<std::uint32_t> current_occupied_pixel_indices_;
     std::deque<EventWindow> ready_windows_;
     std::uint64_t dropped_window_count_ = 0;
+    std::uint64_t total_event_count_    = 0;
 };
 
 inline cv::Mat make_occupied_pixel_frame(const EventWindow &event_window, int width, int height) {

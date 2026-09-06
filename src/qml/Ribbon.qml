@@ -12,6 +12,7 @@ Rectangle {
     property bool connected: false
     property bool cameraOpen: false
     property bool circleTrackingOpen: false
+    property bool spatterTrackingOpen: false
     property bool sequenceRecordingOpen: false
     property bool forceTorqueOpen: false
     property bool recording: false
@@ -21,6 +22,9 @@ Rectangle {
     signal toggleRecording()
     signal accumulationTimeChanged(int value)
     signal detectionPercentChanged(real value)
+    signal spatterParamsChanged(int cellWidth, int cellHeight, int activationThreshold, int minSize,
+                                int maxSize, int maxDistance, int untrackedThreshold,
+                                int roiX, int roiY, int roiWidth, int roiHeight)
 
     Theme { id: theme }
 
@@ -69,6 +73,7 @@ Rectangle {
                 y: addSourceButton.height
                 cameraOpen: root.cameraOpen
                 circleTrackingOpen: root.circleTrackingOpen
+                spatterTrackingOpen: root.spatterTrackingOpen
                 sequenceRecordingOpen: root.sequenceRecordingOpen
                 forceTorqueOpen: root.forceTorqueOpen
                 onToggleSource: root.toggleSource(name)
@@ -102,6 +107,19 @@ Rectangle {
             DetectionPercentDialog {
                 id: detectionDialog
                 onAccepted: root.detectionPercentChanged(value)
+            }
+        }
+
+        Button {
+            visible: root.spatterTrackingOpen
+            text: "Spatter Params"
+            onClicked: spatterDialog.open()
+
+            SpatterParamsDialog {
+                id: spatterDialog
+                onAccepted: root.spatterParamsChanged(cellWidth, cellHeight, activationThreshold, minSize,
+                                                      maxSize, maxDistance, untrackedThreshold,
+                                                      roiX, roiY, roiWidth, roiHeight)
             }
         }
 

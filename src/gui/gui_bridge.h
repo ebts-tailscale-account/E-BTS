@@ -31,10 +31,14 @@ public:
         connect(worker, &CameraSessionWorker::disconnected, this, &GuiBridge::disconnected);
         connect(worker, &CameraSessionWorker::cameraFrameReady, this, &GuiBridge::cameraFrameReady);
         connect(worker, &CameraSessionWorker::trackingFrameReady, this, &GuiBridge::trackingFrameReady);
+        connect(worker, &CameraSessionWorker::spatterFrameReady, this, &GuiBridge::spatterFrameReady);
         connect(worker, &CameraSessionWorker::recordingLogLine, this, &GuiBridge::recordingLogLine);
         connect(worker, &CameraSessionWorker::recordingStateChanged, this, &GuiBridge::recordingStateChanged);
         connect(worker, &CameraSessionWorker::sequenceRecordingWatchStopped, this,
                 &GuiBridge::sequenceRecordingWatchStopped);
+        connect(worker, &CameraSessionWorker::contactEstimateReady, this, &GuiBridge::contactEstimateReady);
+        connect(worker, &CameraSessionWorker::contactCalibrationStatus, this,
+                &GuiBridge::contactCalibrationStatus);
     }
 
 signals:
@@ -43,9 +47,13 @@ signals:
     void disconnected(QString reason);
     void cameraFrameReady(QImage frame);
     void trackingFrameReady(QImage frame);
+    void spatterFrameReady(QImage frame);
     void recordingLogLine(QString line);
     void recordingStateChanged(bool active);
     void sequenceRecordingWatchStopped();
+    void contactEstimateReady(bool valid, bool ambiguous, bool hasMm, double xMm, double yMm,
+                              double divergence, int trackedMarkers);
+    void contactCalibrationStatus(bool ready, bool hasOrigin, QString summary);
 };
 
 } // namespace e_bts::gui

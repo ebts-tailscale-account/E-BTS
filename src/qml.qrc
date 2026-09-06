@@ -6,11 +6,14 @@
         <file alias="qml/AddSourceMenu.qml">qml/AddSourceMenu.qml</file>
         <file alias="qml/CameraPane.qml">qml/CameraPane.qml</file>
         <file alias="qml/CircleTrackingPane.qml">qml/CircleTrackingPane.qml</file>
+        <file alias="qml/ContactReadout.qml">qml/ContactReadout.qml</file>
+        <file alias="qml/SpatterTrackingPane.qml">qml/SpatterTrackingPane.qml</file>
         <file alias="qml/SequenceRecordingConsole.qml">qml/SequenceRecordingConsole.qml</file>
         <file alias="qml/ForceTorquePane.qml">qml/ForceTorquePane.qml</file>
         <file alias="qml/ConnectionBanner.qml">qml/ConnectionBanner.qml</file>
         <file alias="qml/AccumulationTimeDialog.qml">qml/AccumulationTimeDialog.qml</file>
         <file alias="qml/DetectionPercentDialog.qml">qml/DetectionPercentDialog.qml</file>
+        <file alias="qml/SpatterParamsDialog.qml">qml/SpatterParamsDialog.qml</file>
         <file alias="qml/ExportDialog.qml">qml/ExportDialog.qml</file>
         <file alias="icon.png">icon.png</file>
     </qresource>
