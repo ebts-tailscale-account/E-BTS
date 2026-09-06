@@ -120,6 +120,8 @@ struct Options {
     double limit_s                             = 0.0;   // 0 = the whole file
     Metavision::timestamp start_us             = -1;    // <0 = follow --time-ref
     bool legacy_search                         = false;
+    double dump_field_at_s                     = -1.0;  // <0 = no dump
+    std::string dump_field_path;
 };
 
 void print_usage() {
@@ -142,7 +144,10 @@ void print_usage() {
            "               began; the footage before that is setup, not a settled pad.\n"
            "  --legacy-search  search around marker REST sites, as the code did before the\n"
            "               fix. Run it against the default to attribute a change to the fix\n"
-           "               rather than to the pokes.\n";
+           "               rather than to the pokes.\n"
+           "  --dump-field-at-s / --dump-field-out   write the per-cell displacement field and\n"
+           "               its divergence for the first accepted window at/after that RECORDING\n"
+           "               second. For figures; see ml/contact_method_report.py.\n";
 }
 
 bool parse_args(int argc, char *argv[], Options &options) {
@@ -175,6 +180,10 @@ bool parse_args(int argc, char *argv[], Options &options) {
             options.progress_interval_s = std::stod(next_value("--progress-s"));
         } else if (arg == "--limit-s") {
             options.limit_s = std::stod(next_value("--limit-s"));
+        } else if (arg == "--dump-field-at-s") {
+            options.dump_field_at_s = std::stod(next_value("--dump-field-at-s"));
+        } else if (arg == "--dump-field-out") {
+            options.dump_field_path = next_value("--dump-field-out");
         } else if (arg == "--legacy-search") {
             options.legacy_search = true;
         } else if (arg == "--start-us") {
@@ -469,6 +478,55 @@ int main(int argc, char *argv[]) {
                                              options.minimum_circle_density);
         tracking.set_minimum_divergence(options.minimum_divergence);
         tracking.set_legacy_search_centers(options.legacy_search);
+
+        // One window's internals, for the method figures. Written for the first
+        // ACCEPTED window at or after the requested second, so the picture shows a
+        // real contact rather than whatever the clock happened to land on.
+        std::ofstream field_csv;
+        bool field_written = false;
+        if (options.dump_field_at_s >= 0.0 && !options.dump_field_path.empty()) {
+            tracking.set_field_observer([&](const e_bts::DisplacementField &field,
+                                            const std::vector<double> &divergence,
+                                            const e_bts::ContactEstimate &estimate,
+                                            Metavision::timestamp window_end_us) {
+                if (field_written || !estimate.valid) {
+                    return;
+                }
+                if (static_cast<double>(window_end_us) / 1e6 < options.dump_field_at_s) {
+                    return;
+                }
+                field_csv.open(options.dump_field_path);
+                if (!field_csv.is_open()) {
+                    std::cerr << "cannot write " << options.dump_field_path << '\n';
+                    field_written = true;
+                    return;
+                }
+                field_csv << "# window_end_us=" << window_end_us << " rows=" << field.rows
+                          << " cols=" << field.cols << " peak_row=" << estimate.cell_row
+                          << " peak_col=" << estimate.cell_col << " peak_px_x=" << estimate.pixel.x
+                          << " peak_px_y=" << estimate.pixel.y << " divergence=" << estimate.divergence
+                          << " coherence=" << estimate.coherence
+                          << " tracked=" << estimate.tracked_markers << '\n';
+                field_csv << "row,col,ok,baseline_x,baseline_y,dx,dy,divergence\n";
+                for (int r = 0; r < field.rows; ++r) {
+                    for (int c = 0; c < field.cols; ++c) {
+                        const std::size_t i = field.index(r, c);
+                        field_csv << r << ',' << c << ',' << static_cast<int>(field.ok[i]) << ','
+                                  << field.baseline[i].x << ',' << field.baseline[i].y << ','
+                                  << field.dx[i] << ',' << field.dy[i] << ',';
+                        if (std::isfinite(divergence[i])) {
+                            field_csv << divergence[i];
+                        }
+                        field_csv << '\n';
+                    }
+                }
+                field_csv.close();
+                field_written = true;
+                std::cout << "field dump: window " << std::fixed << std::setprecision(2)
+                          << static_cast<double>(window_end_us) / 1e6 << " s -> "
+                          << options.dump_field_path << '\n';
+            });
+        }
         if (options.legacy_search) {
             std::cout << "search centres: BASELINE REST SITES (--legacy-search, the pre-fix "
                          "behaviour)\n";

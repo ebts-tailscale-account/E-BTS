@@ -92,6 +92,17 @@ public:
     // kContactMinimumDivergence; the replay sets it to sweep the threshold.
     void set_minimum_divergence(double minimum_divergence);
 
+    // Observe the intermediate state of one window's estimate: the displacement
+    // field the divergence is taken over, that divergence, and the resulting
+    // estimate. Unset by default and never set by the GUI, so the live path pays
+    // nothing; E_BTS_contact_replay uses it to dump a single window for figures.
+    // The field and divergence are recomputed with the same functions
+    // localise_contact() uses rather than being smuggled out of it, so what is
+    // observed cannot drift from what was decided.
+    using FieldObserver = std::function<void(const DisplacementField &, const std::vector<double> &,
+                                             const ContactEstimate &, Metavision::timestamp)>;
+    void set_field_observer(FieldObserver observer);
+
     // Search the map around each marker's BASELINE REST SITE, the way the code
     // did before circle_map_search_centers() existed. This is the defect, kept
     // switchable on purpose: it is the only way to run the old and new estimators
@@ -135,6 +146,7 @@ private:
     std::atomic_bool baseline_restart_pending_{false};
     double minimum_divergence_ = kContactMinimumDivergence;
     bool legacy_search_centers_ = false;
+    FieldObserver field_observer_;
 
     std::function<bool(const cv::Point2d &, cv::Point2d &)> pixel_to_mm_;
     mutable std::mutex contact_mutex_;

@@ -100,6 +100,11 @@ ContactReading CircleTrackingSource::process_window(const EventWindow &event_win
             }
         }
     }
+    if (field_observer_ && tracker_.circle_map_available() && !tracker_.baseline_collecting()) {
+        const DisplacementField field = build_displacement_field(
+            tracking_update.circles, tracker_.circle_map_row_count(), tracker_.circle_map_column_count());
+        field_observer_(field, field_divergence(field), reading.estimate, event_window.end_us);
+    }
     {
         const std::lock_guard<std::mutex> lock(contact_mutex_);
         last_contact_ = reading;
@@ -151,6 +156,10 @@ void CircleTrackingSource::flush_offline(const std::function<void(const ContactR
 
 void CircleTrackingSource::set_minimum_divergence(double minimum_divergence) {
     minimum_divergence_ = minimum_divergence;
+}
+
+void CircleTrackingSource::set_field_observer(FieldObserver observer) {
+    field_observer_ = std::move(observer);
 }
 
 void CircleTrackingSource::set_legacy_search_centers(bool legacy_search_centers) {
