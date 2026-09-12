@@ -43,6 +43,9 @@ def main():
     ap.add_argument("--accum-us", type=float, default=40000.0)
     ap.add_argument("--px-per-mm", type=float, default=None)
     ap.add_argument("--pad-mm", type=float, default=0.5)
+    ap.add_argument("--only", choices=("both", "rectified", "raw"), default="both",
+                    help="emit one panel instead of the pair. 'rectified' is the "
+                         "de-fisheyed frame on its own.")
     ap.add_argument("--no-mask", action="store_true",
                     help="render the whole warped plane instead of clipping to the "
                          "region the calibration was actually fitted on")
@@ -102,13 +105,18 @@ def main():
         rect = np.where(mask > 0, rect, INVALID_GREY).astype(np.uint8)
         print("  masked to the hull of %d detected squares" % len(pts))
 
-    ph = max(H, OH)
-    lw = int(round(W * ph / float(H)))
-    rw = int(round(OW * ph / float(OH)))
-    gap = 10
-    canvas = np.zeros((ph, lw + gap + rw), np.uint8)
-    canvas[:, :lw] = cv2.resize(u8, (lw, ph), interpolation=cv2.INTER_NEAREST)
-    canvas[:, lw + gap:] = cv2.resize(rect, (rw, ph), interpolation=cv2.INTER_NEAREST)
+    if args.only == "rectified":
+        canvas = rect
+    elif args.only == "raw":
+        canvas = u8
+    else:
+        ph = max(H, OH)
+        lw = int(round(W * ph / float(H)))
+        rw = int(round(OW * ph / float(OH)))
+        gap = 10
+        canvas = np.zeros((ph, lw + gap + rw), np.uint8)
+        canvas[:, :lw] = cv2.resize(u8, (lw, ph), interpolation=cv2.INTER_NEAREST)
+        canvas[:, lw + gap:] = cv2.resize(rect, (rw, ph), interpolation=cv2.INTER_NEAREST)
 
     out = Path(args.out) if args.out else \
         REPO / "output" / (raw.stem + "_undistorted.png")
