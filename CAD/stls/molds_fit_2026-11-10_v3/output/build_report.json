@@ -1,0 +1,123 @@
+{
+ "params": {
+  "seat": "inputs/seat_actual_2026-11-10.step",
+  "pad_from": "inputs/inner30x36.STEP",
+  "out": "output",
+  "style": "thin",
+  "gap_x": 0.68,
+  "gap_y": 1.15,
+  "interference": 0.1,
+  "z_top": 18.6,
+  "wall": 2.0,
+  "marker_d": 3.2,
+  "membrane": 0.3,
+  "marker_chamfer": 0.15
+ },
+ "checks": {
+  "style": "thin",
+  "core_valid": true,
+  "outer_valid": true,
+  "core_vol": 22948.9,
+  "outer_vol": 36711.0,
+  "silicone_vol": 8288.6,
+  "core_x_outer": 0.0,
+  "seat_x_silicone": 468.1,
+  "seat_x_silicone_above_top": 0.434,
+  "footprint": [
+   71.84,
+   101.14
+  ],
+  "outer_height": 23.6,
+  "flange": 3.0,
+  "bolts": [
+   [
+    -30.168871438462958,
+    -46.069747920103595
+   ],
+   [
+    -30.168871438462958,
+    46.06880249733138
+   ],
+   [
+    32.66804187050184,
+    -46.069747920103595
+   ],
+   [
+    32.66804187050184,
+    46.06880249733138
+   ]
+  ],
+  "locating_pins": [
+   [
+    -30.168871438462958,
+    0.0
+   ],
+   [
+    32.66804187050184,
+    0.0
+   ]
+  ]
+ },
+ "hole_markers": [
+  {
+   "face": "-x",
+   "hole_centre": [
+    -21.196,
+    -0.001,
+    13.823
+   ],
+   "wall_point": [
+    -22.522,
+    -0.001,
+    13.287
+   ],
+   "height": 0.38,
+   "membrane": 0.3
+  },
+  {
+   "face": "+x",
+   "hole_centre": [
+    23.24,
+    0.014,
+    13.929
+   ],
+   "wall_point": [
+    24.366,
+    0.014,
+    13.331
+   ],
+   "height": 0.38,
+   "membrane": 0.3
+  },
+  {
+   "face": "-y",
+   "hole_centre": [
+    0.805,
+    -32.456,
+    13.175
+   ],
+   "wall_point": [
+    0.805,
+    -33.699,
+    11.901
+   ],
+   "height": 0.85,
+   "membrane": 0.3
+  },
+  {
+   "face": "+y",
+   "hole_centre": [
+    0.805,
+    32.459,
+    13.172
+   ],
+   "wall_point": [
+    0.805,
+    33.698,
+    11.901
+   ],
+   "height": 0.85,
+   "membrane": 0.3
+  }
+ ]
+}
