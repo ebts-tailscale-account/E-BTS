@@ -13,7 +13,7 @@ import numpy as np
 
 TWO_PI = 2.0 * math.pi
 
-WAVEFORMS = ["sine", "square", "triangle", "saw", "noise", "rumble"]
+WAVEFORMS = ["sine", "square", "triangle", "saw", "noise", "rumble", "audio"]
 WAVE_LABELS = {
     "sine": "Sine",
     "square": "Square",
@@ -21,6 +21,7 @@ WAVE_LABELS = {
     "saw": "Saw",
     "noise": "Noise",
     "rumble": "Rumble",
+    "audio": "Audio in",
 }
 MODULATIONS = ["none", "am", "fm", "sweep"]
 SPATIAL_MODES = ["static", "chase", "pingpong", "random"]
@@ -48,6 +49,14 @@ class GenParams:
     gate_on_ms: float = 60.0
     gate_off_ms: float = 140.0
     gate_sync: bool = True      # restart waveform phase at each burst
+    # audio in (music -> haptics); freq is the carrier for envelope / beats
+    audio_mode: str = "envelope"  # bass | envelope | beats
+    audio_gain: float = 0.0       # dB
+    audio_auto: bool = True       # normalise loud / quiet tracks
+    audio_cutoff: float = 120.0   # Hz, low-pass before analysis
+    audio_smooth: float = 80.0    # ms, envelope release / hit decay
+    audio_floor: float = 0.06     # gate, 0..1
+    audio_beat: float = 1.6       # onset threshold (fast / slow energy)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -130,6 +139,7 @@ class Generator:
     def __init__(self, params: GenParams | None = None, seed: int | None = None):
         self.params = params or GenParams()
         self.rng = np.random.default_rng(seed)
+        self.audio = None  # AudioFollower, attached by the engine
         self.reset()
 
     def reset(self) -> None:
@@ -164,7 +174,8 @@ class Generator:
         dt = 1.0 / sr
         idx = np.arange(n, dtype=np.float64)
         f0 = max(0.1, float(p.freq))
-        mod = p.mod
+        is_audio = p.waveform == "audio"
+        mod = "none" if is_audio else p.mod  # Audio in has no modulation / burst of its own
 
         # ---- instantaneous frequency
         freq = None
@@ -203,7 +214,7 @@ class Generator:
         # ---- burst gate
         env = None
         sync_ph = None
-        if p.gate and p.gate_off_ms > 0.1:
+        if p.gate and p.gate_off_ms > 0.1 and not is_audio:
             on = max(1.0, float(p.gate_on_ms)) / 1000.0
             off = float(p.gate_off_ms) / 1000.0
             per = on + off
@@ -224,6 +235,12 @@ class Generator:
             y = self.rng.uniform(-1.0, 1.0, n)
         elif wf == "rumble":
             y = self._rumble(ph, ph_end)
+        elif wf == "audio":
+            ctrl = self.audio.render(n, sr, p) if self.audio is not None else np.zeros(n)
+            if p.audio_mode == "bass":
+                y = ctrl
+            else:
+                y = np.sin(TWO_PI * np.mod(ph, 1.0)) * ctrl
         else:
             base = sync_ph if sync_ph is not None else ph
             y = shape(wf, np.mod(base + float(p.phase) / 360.0, 1.0), p)

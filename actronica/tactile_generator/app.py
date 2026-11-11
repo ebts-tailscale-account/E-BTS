@@ -14,6 +14,8 @@ from tkinter import filedialog, ttk
 import numpy as np
 
 from . import widgets as W
+from .audio_in import (AUDIO_MODE_LABELS, AUDIO_MODES, default_output_is_haptic, list_sources, sc_missing,
+                       source_label)
 from .dsp import EFFECTS, WAVE_LABELS, WAVEFORMS, GenParams, pulse, shape
 from .engine import (ROUTE_A, ROUTE_AB, ROUTE_B, ROUTE_OFF, AudioEngine, list_output_devices,
                      pick_default_device, refresh_portaudio)
@@ -53,6 +55,8 @@ def icon_wave(wf, n):
             y = 0.55 * np.sin(2 * np.pi * (1.3 * x) + 1.0) + 0.4 * np.sin(2 * np.pi * 3.2 * x + 0.3)
         elif wf == "square":
             y = pulse(p, 0.5, 0.2)
+        elif wf == "audio":
+            y = np.sin(2 * np.pi * 9 * x) * (0.2 + 0.8 * np.abs(np.sin(np.pi * 2.5 * x + 0.4)))
         else:
             y = shape(wf, p, GenParams(symmetry=0.5, softness=0.0))
         _ICONS[key] = y * 0.95
@@ -137,11 +141,21 @@ class TactileLabGenerator:
         self._paint = None
         self._summary_cache = [None, None]
         self._spec_peak = None
+        # audio in
+        self.audio_sources: list[dict] = []
+        self.audio_src: dict | None = None
+        self.audio_src_name: str | None = None
+        self._audio_failed = False
+        self._in_disp = 0.0
+        self._last_onsets = [0, 0]
+        self._beat_flash = 0.0
+        self._hsd_is_default = False
 
         session = self._read_session()
         self._style()
         self._build()
         self._apply_session(session)
+        self.refresh_audio_sources()
         self._sync_ui()
         self._bind_keys()
         self.refresh_devices(auto_connect=True, prefer=session.get("device"))
@@ -295,11 +309,15 @@ class TactileLabGenerator:
         self.sl["phase"] = Slider(sb, "Phase", 0, 360, 0, unit="°", step=1,
                                   command=lambda v: self._set("phase", v))
 
-        section(b, "Modulation").pack(fill="x", pady=(px(10), px(7)))
-        self.mod_seg = Segmented(b, [("none", "Off"), ("am", "AM"), ("fm", "FM"), ("sweep", "Sweep")], "none",
+        # modulation + burst (hidden while the generator plays Audio in)
+        self.std_box = tk.Frame(b, bg=T.panel)
+        self.std_box.pack(fill="x")
+        std = self.std_box
+        section(std, "Modulation").pack(fill="x", pady=(px(10), px(7)))
+        self.mod_seg = Segmented(std, [("none", "Off"), ("am", "AM"), ("fm", "FM"), ("sweep", "Sweep")], "none",
                                  command=self._on_mod, fill=True)
         self.mod_seg.pack(fill="x")
-        self.mod_box = tk.Frame(b, bg=T.panel)
+        self.mod_box = tk.Frame(std, bg=T.panel)
         self.mod_box.pack(fill="x", pady=(px(4), 0))
         mb = self.mod_box
         self.sl["mod_rate"] = Slider(mb, "Rate", 0.1, 50, 2, unit=" Hz", fmt=fmt_rate, log=True, step=0.01,
@@ -323,12 +341,12 @@ class TactileLabGenerator:
         self.sweep_now.pack(side="left", padx=(px(12), 0))
         self.marks_box = tk.Frame(mb, bg=T.panel)
 
-        bh = tk.Frame(b, bg=T.panel)
+        bh = tk.Frame(std, bg=T.panel)
         bh.pack(fill="x", pady=(px(12), px(4)))
         self.gate_tg = Toggle(bh, "", command=lambda v: (self._set("gate", v), self._update_visibility()))
         self.gate_tg.pack(side="right", padx=(px(8), 0))
         section(bh, "Burst · pulse train").pack(side="left", fill="x", expand=True)
-        self.gate_box = tk.Frame(b, bg=T.panel)
+        self.gate_box = tk.Frame(std, bg=T.panel)
         self.gate_box.pack(fill="x")
         gb = self.gate_box
         self.sl["gate_on_ms"] = Slider(gb, "On time", 2, 2000, 60, unit=" ms", log=True, step=1,
@@ -343,6 +361,161 @@ class TactileLabGenerator:
         self.sync_tg.pack(side="left")
         self.gate_info = tk.Label(gr, text="", font=font(11, mono=True), fg=T.muted, bg=T.panel)
         self.gate_info.pack(side="right")
+
+        self._build_audio_box(b)
+
+    # ------------------------------------------------------------------ audio in
+    def _build_audio_box(self, parent):
+        """Controls shown instead of Modulation/Burst while the selected generator plays Audio in.
+        The capture source is shared by both generators; mode and processing are per generator."""
+        self.audio_box = tk.Frame(parent, bg=T.panel)
+        ab = self.audio_box
+        section(ab, "Audio input").pack(fill="x", pady=(px(10), px(7)))
+        row = tk.Frame(ab, bg=T.panel)
+        row.pack(fill="x")
+        self.src_var = tk.StringVar()
+        self.src_combo = ttk.Combobox(row, textvariable=self.src_var, state="readonly", style="Dark.TCombobox",
+                                      font=font(11), width=10)
+        self.src_combo.pack(side="left", fill="x", expand=True)
+        self.src_combo.bind("<<ComboboxSelected>>", lambda e: (self.root.focus_set(), self._on_audio_source()))
+        Button(row, "↻", command=self.refresh_audio_sources, width=32, height=30, size=13).pack(
+            side="left", padx=(px(6), 0))
+
+        st = tk.Frame(ab, bg=T.panel)
+        st.pack(fill="x", pady=(px(7), px(2)))
+        self.in_meter = tk.Canvas(st, height=px(10), width=px(110), bg=T.panel, highlightthickness=0)
+        self.in_meter.pack(side="left")
+        self.beat_dot = tk.Canvas(st, width=px(14), height=px(14), bg=T.panel, highlightthickness=0)
+        self.beat_dot.pack(side="left", padx=(px(8), px(4)))
+        self.audio_status = tk.Label(st, text="", font=font(10), fg=T.muted, bg=T.panel, anchor="w")
+        self.audio_status.pack(side="left", fill="x", expand=True)
+
+        self.amode_seg = Segmented(ab, [(m, AUDIO_MODE_LABELS[m]) for m in AUDIO_MODES], "envelope",
+                                   command=self._on_audio_mode, fill=True)
+        self.amode_seg.pack(fill="x", pady=(px(6), px(4)))
+        self.audio_sliders = tk.Frame(ab, bg=T.panel)
+        self.audio_sliders.pack(fill="x")
+        asb = self.audio_sliders
+        self.sl["audio_gain"] = Slider(asb, "Sensitivity", -20, 40, 0, unit=" dB", fmt=lambda v: f"{v:+.0f}",
+                                       step=1, command=lambda v: self._set("audio_gain", v))
+        self.sl["audio_cutoff"] = Slider(asb, "Low-pass", 30, 400, 120, unit=" Hz", fmt=fmt_hz, log=True, step=1,
+                                         command=lambda v: self._set("audio_cutoff", v))
+        self.sl["audio_smooth"] = Slider(asb, "Release", 10, 1000, 80, unit=" ms", log=True, step=1,
+                                         command=lambda v: self._set("audio_smooth", v))
+        self.sl["audio_beat"] = Slider(asb, "Beat threshold", 1.1, 4.0, 1.6, unit=" ×", fmt=lambda v: f"{v:.2f}",
+                                       step=0.05, command=lambda v: self._set("audio_beat", v))
+        self.sl["audio_floor"] = Slider(asb, "Noise gate", 0, 50, 6, unit=" %", step=1,
+                                        command=lambda v: self._set("audio_floor", v / 100))
+        self.auto_tg = Toggle(ab, "Auto level", value=True, command=lambda v: self._set("audio_auto", v))
+        self.auto_tg.pack(anchor="w", pady=(px(4), 0))
+        tk.Label(ab, text="Play the music on the device selected above (speakers / headphones), not on the HSD.",
+                 font=font(10), fg=T.dim, bg=T.panel, anchor="w", justify="left",
+                 wraplength=px(330)).pack(fill="x", pady=(px(6), 0))
+
+    def _update_audio_visibility(self):
+        """Show only the knobs that matter for the current audio mode."""
+        mode = self.p.audio_mode
+        keys = {
+            "bass": ["audio_gain", "audio_cutoff", "audio_floor"],
+            "envelope": ["audio_gain", "audio_cutoff", "audio_smooth", "audio_floor"],
+            "beats": ["audio_gain", "audio_cutoff", "audio_smooth", "audio_beat", "audio_floor"],
+        }[mode]
+        self.sl["audio_smooth"].label = "Hit decay" if mode == "beats" else "Release"
+        self.sl["audio_cutoff"].label = "Bass band" if mode == "beats" else "Low-pass"
+        for k in ("audio_gain", "audio_cutoff", "audio_smooth", "audio_beat", "audio_floor"):
+            self.sl[k].pack_forget()
+        for k in keys:
+            self.sl[k].redraw()
+            self.sl[k].pack(fill="x")
+
+    def _on_audio_mode(self, v):
+        self.p.audio_mode = v
+        self._update_visibility()
+
+    def refresh_audio_sources(self):
+        """Re-scan capture sources and keep the remembered one when it is still present."""
+        self.audio_sources = list_sources()
+        self.src_combo.configure(values=[source_label(s) for s in self.audio_sources])
+        pick = (next((s for s in self.audio_sources if s["name"] == self.audio_src_name), None)
+                or next((s for s in self.audio_sources if s["default"]), None)
+                or (self.audio_sources[0] if self.audio_sources else None))
+        self._select_audio_source(pick)
+
+    def _on_audio_source(self):
+        lbl = self.src_var.get()
+        self._select_audio_source(next((s for s in self.audio_sources if source_label(s) == lbl), None))
+
+    def _select_audio_source(self, src):
+        changed = (src or {}).get("id") != (self.audio_src or {}).get("id")
+        self.audio_src = src
+        self.src_var.set(source_label(src) if src else "")
+        if src:
+            self.audio_src_name = src["name"]
+        if changed:
+            self.engine.capture.stop()  # _manage_capture restarts it with the new source
+        self._audio_failed = False
+
+    def _manage_capture(self):
+        """Capture runs only while an enabled generator plays Audio in, so the input device
+        is not held (and no CPU is spent) otherwise. Called from the slow status timer."""
+        cap = self.engine.capture
+        needed = any(g.params.enabled and g.params.waveform == "audio" for g in self.engine.gens)
+        if needed or self.p.waveform == "audio":
+            was = self._hsd_is_default
+            self._hsd_is_default = default_output_is_haptic()
+            if self._hsd_is_default and not was:
+                self.flash("Windows plays sound on the HSD — set Speakers/Headphones as the default output "
+                           "(or pick them in Spotify) so the music can be captured", T.warn)
+        if needed and not cap.running and self.audio_src and not self._audio_failed:
+            cap.start(self.audio_src)
+        elif not needed and cap.running:
+            cap.stop()
+        if cap.error and not self._audio_failed:
+            self._audio_failed = True
+            self.flash(f"Audio input failed: {cap.error}", T.bad)
+
+    def _update_audio_live(self):
+        """Input level meter, beat indicator and status line of the Audio in panel."""
+        cap = self.engine.capture
+        lv = cap.level
+        cap.level = 0.0
+        self._in_disp = max(lv, self._in_disp * 0.85)
+        cv = self.in_meter
+        cv.delete("all")
+        w, h = int(cv["width"]), int(cv["height"])
+        round_rect(cv, 0, 0, w, h, h / 2, fill=T.raised, outline="")
+        if self._in_disp > 0.003:
+            round_rect(cv, 0, 0, max(h, w * min(1.0, self._in_disp)), h, h / 2,
+                       fill=GEN_COLORS[self.sel], outline="")
+
+        follower = self.engine.gens[self.sel].audio
+        if follower.onsets != self._last_onsets[self.sel]:
+            self._last_onsets[self.sel] = follower.onsets
+            self._beat_flash = 1.0
+        self._beat_flash = max(0.0, self._beat_flash - 0.12)
+        d = self.beat_dot
+        d.delete("all")
+        r = px(5)
+        c = px(7)
+        d.create_oval(c - r, c - r, c + r, c + r, outline="",
+                      fill=mix(T.raised, GEN_COLORS[self.sel], self._beat_flash) if self._beat_flash else T.raised)
+
+        if sc_missing():
+            txt, col = "pip install soundcard → system audio", T.warn
+        elif self._hsd_is_default and (self.audio_src or {}).get("kind") == "loopback":
+            txt, col = "Windows output is the HSD → switch it to speakers", T.warn
+        elif cap.error:
+            txt, col = "input failed — pick another source", T.bad
+        elif cap.active:
+            txt, col = "listening", T.good
+        elif not self.audio_src:
+            txt, col = "no input source found", T.warn
+        elif not self.p.enabled:
+            txt, col = "generator is off", T.muted
+        else:
+            txt, col = "starting…", T.muted
+        if self.audio_status.cget("text") != txt:
+            self.audio_status.configure(text=txt, fg=col)
 
     # ------------------------------------------------------------------ scope
     def _build_scope(self, parent):
@@ -492,7 +665,8 @@ class TactileLabGenerator:
             s.redraw()
         self.wave.set_color(c)
         self.mod_seg.set_color(c)
-        for tg in (self.gate_tg, self.pp_tg, self.sync_tg):
+        self.amode_seg.set_color(c)
+        for tg in (self.gate_tg, self.pp_tg, self.sync_tg, self.auto_tg):
             tg.color = c
             tg.redraw()
         self._load_gen_widgets()
@@ -514,6 +688,13 @@ class TactileLabGenerator:
         s["sweep_time"].set(p.sweep_time)
         s["gate_on_ms"].set(p.gate_on_ms)
         s["gate_off_ms"].set(p.gate_off_ms)
+        s["audio_gain"].set(p.audio_gain)
+        s["audio_cutoff"].set(p.audio_cutoff)
+        s["audio_smooth"].set(p.audio_smooth)
+        s["audio_beat"].set(p.audio_beat)
+        s["audio_floor"].set(p.audio_floor * 100)
+        self.amode_seg.set(p.audio_mode)
+        self.auto_tg.set(p.audio_auto)
         self.mod_seg.set(p.mod)
         self.pp_tg.set(p.sweep_pingpong)
         self.gate_tg.set(p.gate)
@@ -533,8 +714,14 @@ class TactileLabGenerator:
             "saw": ["freq", "amp", "softness", "phase"],
             "noise": ["amp"],
             "rumble": ["freq", "amp"],
+            "audio": ["amp"] if p.audio_mode == "bass" else ["freq", "amp"],
         }[wf]
-        self.sl["freq"].label = "Grain rate" if wf == "rumble" else ("Start freq" if p.mod == "sweep" else "Frequency")
+        if wf == "audio":
+            self.sl["freq"].label = "Carrier"
+        elif wf == "rumble":
+            self.sl["freq"].label = "Grain rate"
+        else:
+            self.sl["freq"].label = "Start freq" if p.mod == "sweep" else "Frequency"
         self.sl["freq"].redraw()
         for k in ("freq", "amp", "duty", "symmetry", "softness", "phase"):
             self.sl[k].pack_forget()
@@ -562,6 +749,15 @@ class TactileLabGenerator:
             self.gate_box.pack(fill="x")
         else:
             self.gate_box.pack_forget()
+
+        # Audio in replaces the modulation / burst sections (the DSP ignores them for audio)
+        if wf == "audio":
+            self.std_box.pack_forget()
+            self.audio_box.pack(fill="x")
+            self._update_audio_visibility()
+        else:
+            self.audio_box.pack_forget()
+            self.std_box.pack(fill="x")
 
     # ------------------------------------------------------------------ sweep marks
     def mark_sweep(self):
@@ -936,12 +1132,18 @@ class TactileLabGenerator:
             p = self.engine.gens[i].params
             if p.waveform == "noise":
                 s = f"Noise · {p.amp * 100:.0f}%"
+            elif p.waveform == "audio":
+                carrier = "" if p.audio_mode == "bass" else f" · {fmt_hz(p.freq)} Hz"
+                s = f"Audio in{carrier} · {p.amp * 100:.0f}%"
             else:
                 s = f"{WAVE_LABELS[p.waveform]} · {fmt_hz(p.freq)} Hz · {p.amp * 100:.0f}%"
             flags = []
-            if p.mod != "none":
+            if p.waveform == "audio":
+                flags.append(AUDIO_MODE_LABELS[p.audio_mode].upper())
+                flags.append("LISTENING" if self.engine.capture.active else "NO INPUT")
+            elif p.mod != "none":
                 flags.append({"am": "AM", "fm": "FM", "sweep": f"SWEEP→{fmt_hz(p.sweep_to)}"}[p.mod])
-            if p.gate:
+            if p.gate and p.waveform != "audio":
                 flags.append("BURST")
             if not p.enabled:
                 flags = ["OFF"]
@@ -952,6 +1154,8 @@ class TactileLabGenerator:
                 t.flags.configure(text="  ".join(flags) or "CONTINUOUS")
         p = self.p
         g = self.engine.gens[self.sel]
+        if p.waveform == "audio":
+            self._update_audio_live()
         if p.mod == "sweep":
             live = self.engine.running and self.engine.output_on
             self.sweep_now.configure(text=f"{fmt_hz(g.inst_freq)} Hz" if live else "— Hz")
@@ -1008,6 +1212,7 @@ class TactileLabGenerator:
         else:
             txt = "offline · scope shows a preview"
         self.foot_lbl.configure(text=txt)
+        self._manage_capture()
         if e.last_error:
             self.flash(f"Audio error: {e.last_error}", T.bad)
             e.last_error = None
@@ -1201,6 +1406,7 @@ class TactileLabGenerator:
             if mk and len(mk) == 2:
                 self.marks = [list(mk[0]), list(mk[1])]
             self.sel = int(d.get("sel", 0)) % 2
+            self.audio_src_name = d.get("audio_source") or None
         except Exception:
             traceback.print_exc()
 
@@ -1211,6 +1417,7 @@ class TactileLabGenerator:
             "device": {"name": dev["name"], "hostapi": dev["hostapi"]} if dev else None,
             "blocksize": self.blocksize, "exclusive": self.exclusive, "scope_mode": self.scope_mode,
             "scope_ms": self.scope_ms, "traces": self.traces, "marks": self.marks, "sel": self.sel,
+            "audio_source": self.audio_src_name,
         })
         try:
             SESSION_FILE.write_text(json.dumps(d, indent=1), encoding="utf-8")
@@ -1244,6 +1451,7 @@ class TactileLabGenerator:
             self._finish_close()
 
     def _finish_close(self):
+        self.engine.capture.stop()
         self.engine.stop()
         self.root.destroy()
 

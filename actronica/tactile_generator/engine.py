@@ -5,6 +5,7 @@ import collections
 
 import numpy as np
 
+from .audio_in import AudioCapture, AudioFollower
 from .dsp import GenParams, Generator, Spatial, preview, render_effect
 
 try:
@@ -76,6 +77,9 @@ class AudioEngine:
             Generator(GenParams(), seed=1),
             Generator(GenParams(enabled=False, waveform="square", freq=40.0, amp=0.3), seed=2),
         ]
+        self.capture = AudioCapture()
+        for g in self.gens:
+            g.audio = AudioFollower(self.capture)
         self.spatial = Spatial()
         self.master = 0.8
         self.limit = 0.95

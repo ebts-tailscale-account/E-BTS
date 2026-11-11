@@ -1,0 +1,4 @@
+# Tactile Lab Generator — install with:  pip install -r requirements.txt
+numpy>=1.24
+sounddevice>=0.4.6
+soundcard>=0.4.3   # system-audio (loopback) capture for Audio in; without it only microphones work
