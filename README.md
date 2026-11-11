@@ -263,6 +263,7 @@ Keep large camera recordings outside Git unless there is a specific reason to ve
 | Zaki Al-Farabi        | [GitHub]() · [LinkedIn]() |
 | Gleb Tarkinskiy       | [GitHub]() · [LinkedIn]() |
 | Airis Kairolla        | [GitHub]() · [LinkedIn]() |
+| Zhamshid Kuanganov    | [GitHub]() · [LinkedIn]() |
 | Dinmukhammed Mukashev | [GitHub]() · [LinkedIn]() |
 | Yelenov Amir          | [GitHub]() · [LinkedIn]() |
 | Zhanat Kappassov      | [GitHub]() · [LinkedIn]() |
